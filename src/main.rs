@@ -1,12 +1,15 @@
 //! odei — tiny, native coding agent for the terminal, powered by the
 //! Kimi Code subscription API (https://api.kimi.com/coding).
 
+mod activity;
 mod agent;
 mod calls;
 mod cli;
+mod cloud;
 mod compact;
 mod config;
 mod context;
+mod diff;
 mod eval;
 mod inspect;
 mod markdown;
@@ -14,6 +17,7 @@ mod permissions;
 mod provider;
 mod serve;
 mod session;
+mod splash;
 mod theme;
 mod tools;
 mod ui;

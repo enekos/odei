@@ -19,6 +19,10 @@ const OUTPUT_CAP: usize = 256 * 1024;
 /// Above this, a write_file body is described rather than inlined as a heredoc.
 const HEREDOC_CAP: usize = 8 * 1024;
 const PRUNE_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Changed lines above which a diff is kept as counts only. A whole-file
+/// rewrite would otherwise put a second copy of the file in the journal for
+/// a body nobody scrolls through.
+const DIFF_LINE_CAP: usize = 2000;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Record {
@@ -33,6 +37,10 @@ pub struct Record {
     pub ms: u64,
     pub is_error: bool,
     pub output: String,
+    /// What the call did to a file, for the calls a file-changing tool made.
+    /// Absent on journals written before diffs existed, hence the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<crate::diff::FileDiff>,
 }
 
 pub struct Journal {
@@ -112,6 +120,12 @@ impl Journal {
                 .unwrap_or(0);
             output = format!("[earlier output dropped]\n{}", &output[cut..]);
         }
+        let diff = outcome.diff.clone().map(|mut diff| {
+            if diff.added + diff.removed > DIFF_LINE_CAP {
+                diff.hunks.clear();
+            }
+            diff
+        });
         let record = Record {
             n,
             tool: tool.to_string(),
@@ -122,6 +136,7 @@ impl Journal {
             ms: elapsed.as_millis() as u64,
             is_error: outcome.is_error,
             output,
+            diff,
         };
         if let Ok(line) = serde_json::to_string(&record) {
             use std::io::Write as _;
@@ -248,7 +263,7 @@ pub fn repro(record: &Record) -> Repro {
                 Repro { exact: false, lines }
             }
         }
-        "edit_file" => approx(format!("git diff -- {}  # the edit is under Arguments", path())),
+        "edit_file" => approx(format!("git diff -- {}  # the change is in the Diff section", path())),
         "delete_file" => approx(format!("rm {}", path())),
         "create_folder" => approx(format!("mkdir -p {}", path())),
         "rename_file" => approx(format!(
@@ -307,6 +322,23 @@ pub fn report(record: &Record, width: usize) -> String {
         let _ = writeln!(out, "{line}");
     }
 
+    // The diff comes before the arguments: for an edit it is the arguments,
+    // read the way a person reads a change.
+    if let Some(diff) = record.diff.as_ref().filter(|d| !d.is_empty()) {
+        let title = format!(
+            "Diff · {} · {}{}",
+            diff.path,
+            diff.stat(),
+            if diff.created { " · new file" } else { "" }
+        );
+        let _ = write!(out, "\n{}\n", rule(&title, width));
+        if diff.hunks.is_empty() {
+            let _ = writeln!(out, "(a change this large is kept as counts only)");
+        } else {
+            let _ = write!(out, "{}", crate::diff::plain_block(diff, width));
+        }
+    }
+
     let args = serde_json::to_string_pretty(&record.input).unwrap_or_default();
     if args.trim() != "{}" && !args.trim().is_empty() {
         let _ = write!(out, "\n{}\n{args}\n", rule("Arguments", width));
@@ -339,6 +371,9 @@ pub fn summary_line(record: &Record) -> String {
     let seconds = record.ms as f64 / 1000.0;
     let timing = if seconds >= 0.05 { format!("{seconds:.1}s") } else { String::new() };
     let mut label = record.label.clone();
+    if let Some(diff) = record.diff.as_ref().filter(|d| !d.is_empty()) {
+        let _ = write!(label, "  {}", diff.stat());
+    }
     if label.chars().count() > 52 {
         label = label.chars().take(51).collect::<String>() + "…";
     }
@@ -361,6 +396,7 @@ mod tests {
             ms: 2400,
             is_error: false,
             output: "hello".into(),
+            diff: None,
         }
     }
 
@@ -439,6 +475,40 @@ mod tests {
         assert!(text.contains("test result: FAILED"), "{text}");
         // No escape codes: this gets paged and pasted.
         assert!(!text.contains('\x1b'), "report must stay plain text");
+    }
+
+    #[test]
+    fn an_edit_report_leads_with_the_diff() {
+        let mut rec = record(
+            "edit_file",
+            json!({"path": "src/a.rs", "old_string": "two", "new_string": "TWO"}),
+        );
+        rec.label = "Edited src/a.rs".into();
+        rec.output = "Edited src/a.rs at line 2".into();
+        rec.diff = Some(crate::diff::compute(
+            "src/a.rs",
+            "one\ntwo\nthree\n",
+            "one\nTWO\nthree\n",
+            false,
+        ));
+        let text = report(&rec, 72);
+        assert!(text.contains("── Diff · src/a.rs · +1 −1 "), "{text}");
+        assert!(text.contains(" 2 - two"), "{text}");
+        assert!(text.contains(" 2 + TWO"), "{text}");
+        // The diff comes before the arguments that produced it.
+        assert!(text.find("── Diff").unwrap() < text.find("── Arguments").unwrap(), "{text}");
+        assert!(!text.contains('\x1b'), "report must stay plain text");
+
+        // A rewrite too large to keep says so instead of showing nothing.
+        rec.diff = Some(crate::diff::FileDiff {
+            path: "src/a.rs".into(),
+            added: 9000,
+            removed: 9000,
+            hunks: Vec::new(),
+            created: false,
+            coarse: true,
+        });
+        assert!(report(&rec, 72).contains("kept as counts only"));
     }
 
     #[test]

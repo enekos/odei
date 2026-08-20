@@ -107,13 +107,24 @@ pub fn write_file(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         }
     }
     let existed = resolved.exists();
+    // The only moment both sides of the change exist. Non-UTF-8 previous
+    // contents simply produce no diff rather than failing the write.
+    let previous = if existed {
+        std::fs::read_to_string(&resolved).unwrap_or_default()
+    } else {
+        String::new()
+    };
     match std::fs::write(&resolved, content) {
-        Ok(()) => ToolOutcome::ok(format!(
-            "{} {} ({} bytes)",
-            if existed { "Overwrote" } else { "Created" },
-            display_rel(ctx, &resolved),
-            content.len()
-        )),
+        Ok(()) => {
+            let rel = display_rel(ctx, &resolved);
+            let diff = crate::diff::compute(&rel, &previous, content, !existed);
+            ToolOutcome::ok(format!(
+                "{} {rel} ({} bytes)",
+                if existed { "Overwrote" } else { "Created" },
+                content.len()
+            ))
+            .with_diff(diff)
+        }
         Err(e) => ToolOutcome::err(format!("cannot write {path}: {e}")),
     }
 }
@@ -146,8 +157,15 @@ pub fn edit_file(ctx: &ToolContext, input: &Value) -> ToolOutcome {
     let updated = text.replacen(old, new, 1);
     match std::fs::write(&resolved, &updated) {
         Ok(()) => {
-            let line = text[..text.find(old).unwrap()].lines().count().max(1);
-            ToolOutcome::ok(format!("Edited {} at line {line}", display_rel(ctx, &resolved)))
+            // Newlines before the match, plus one: `lines().count()` would
+            // report the line above whenever the match starts a line, and the
+            // model notices the file disagreeing with the tool.
+            let line = text[..text.find(old).unwrap()].matches('\n').count() + 1;
+            let rel = display_rel(ctx, &resolved);
+            // Diffed whole-file rather than old_string against new_string, so
+            // the hunk carries the real line numbers and its true context.
+            let diff = crate::diff::compute(&rel, &text, &updated, false);
+            ToolOutcome::ok(format!("Edited {rel} at line {line}")).with_diff(diff)
         }
         Err(e) => ToolOutcome::err(format!("cannot write {path}: {e}")),
     }

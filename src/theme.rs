@@ -4,6 +4,10 @@
 
 use std::io::IsTerminal;
 
+// Themes are plain static string tables; sharing one with the cloud's
+// render thread is safe.
+unsafe impl Sync for Theme {}
+
 pub const RESET: &str = "\x1b[0m";
 #[allow(dead_code)]
 pub const BOLD: &str = "\x1b[1m";
@@ -145,6 +149,41 @@ const PLAIN: Theme = Theme {
     table_header: "",
 };
 
+/// The splash mist, thin → solid. The whole point of the grayscale rule is
+/// that a ramp like this can carry depth on its own, so the cloud is eight
+/// steps of gray and no hue at all.
+const MIST_DARK: [&str; 7] = [
+    "",
+    "\x1b[38;5;238m",
+    "\x1b[38;5;241m",
+    "\x1b[38;5;245m",
+    "\x1b[38;5;248m",
+    "\x1b[38;5;252m",
+    "\x1b[38;5;255m",
+];
+
+const MIST_LIGHT: [&str; 7] = [
+    "",
+    "\x1b[38;5;251m",
+    "\x1b[38;5;249m",
+    "\x1b[38;5;246m",
+    "\x1b[38;5;242m",
+    "\x1b[38;5;238m",
+    "\x1b[38;5;235m",
+];
+
+const MIST_PLAIN: [&str; 7] = ["", "", "", "", "", "", ""];
+
+pub fn mist_ramp(theme: &Theme) -> &'static [&'static str; 7] {
+    if !theme.enabled {
+        &MIST_PLAIN
+    } else if theme.is_light {
+        &MIST_LIGHT
+    } else {
+        &MIST_DARK
+    }
+}
+
 /// The unstyled theme, also used to measure markup-free text.
 pub fn plain() -> &'static Theme {
     &PLAIN
@@ -195,6 +234,8 @@ impl Theme {
     }
 }
 
+/// The one-line greeting, used wherever the splash cannot draw: a pipe, a
+/// window too narrow for the wordmark, `NO_COLOR`, `ODEI_SPLASH=off`.
 pub fn welcome_message(theme: &Theme, version: &str) -> String {
     format!(
         "{}𝒐dei{}{} v{} · Run /help for commands{}\n",

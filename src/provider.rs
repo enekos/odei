@@ -426,6 +426,7 @@ mod tests {
             model: "kimi-for-coding".into(),
             base_url: "http://localhost".into(),
             permission_mode: PermissionMode::Auto,
+            detail: crate::config::Detail::Normal,
             max_agent_steps: 10,
             workspace_root: std::path::PathBuf::from("/tmp"),
             prompt_cache: true,

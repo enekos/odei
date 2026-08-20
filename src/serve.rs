@@ -59,8 +59,25 @@ struct JsonSink {
 }
 
 impl Sink for JsonSink {
-    fn on_waiting(&mut self) {
-        emit(json!({"event": "waiting"}));
+    fn on_waiting(&mut self, step: usize) {
+        emit(json!({"event": "waiting", "step": step}));
+    }
+
+    fn on_thinking(&mut self, text: &str) {
+        emit(json!({"event": "thinking", "delta": text}));
+    }
+
+    fn on_step_done(&mut self, step: &crate::agent::StepDone) {
+        emit(json!({
+            "event": "step",
+            "step": step.step,
+            "ms": step.elapsed.as_millis(),
+            "input_tokens": step.usage.context_tokens(),
+            "output_tokens": step.usage.output_tokens,
+            "cached_tokens": step.usage.cache_read_tokens,
+            "context_fraction": step.context_fraction,
+            "tool_calls": step.tool_calls,
+        }));
     }
 
     fn on_text_delta(&mut self, text: &str) {
@@ -79,24 +96,33 @@ impl Sink for JsonSink {
         emit(json!({"event": "group", "summary": summary}));
     }
 
-    fn on_tool_start(&mut self, label: &str, last_in_group: bool) {
-        emit(json!({"event": "tool", "phase": "start", "label": label, "last": last_in_group}));
+    fn on_tool_start(&mut self, start: &crate::agent::ToolStart) {
+        emit(json!({
+            "event": "tool",
+            "phase": "start",
+            "tool": start.tool,
+            "label": start.label,
+            "qualifier": crate::activity::qualifier(start.tool, start.input),
+            "last": start.last_in_group,
+        }));
     }
 
-    fn on_tool_done(
-        &mut self,
-        label: &str,
-        is_error: bool,
-        last_in_group: bool,
-        call: Option<usize>,
-    ) {
+    fn on_tool_done(&mut self, done: &crate::agent::ToolDone) {
+        // The front end gets the same three things the shell draws — label,
+        // stat, diff — so it can render a call without parsing tool output.
+        let call = crate::activity::Call::of(done);
         emit(json!({
             "event": "tool",
             "phase": "done",
-            "label": label,
-            "error": is_error,
-            "last": last_in_group,
-            "call": call,
+            "tool": done.tool,
+            "label": done.label,
+            "qualifier": crate::activity::qualifier(done.tool, done.input),
+            "stat": call.stat(),
+            "ms": done.elapsed.as_millis(),
+            "error": done.is_error,
+            "last": done.last_in_group,
+            "call": done.call,
+            "diff": done.diff,
         }));
     }
 

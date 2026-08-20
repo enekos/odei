@@ -77,6 +77,26 @@ odei
 
 The current directory becomes the workspace. Type a prompt, or `/help` for interactive commands.
 
+*odei* is Basque for cloud, so it opens as one: the wordmark condenses out of drifting
+mist — a noise cloud blowing across the field while the letters thicken to solid — in
+about four tenths of a second, seeded from the clock, so no two launches look alike.
+
+```
+      ██████      ████████    ██████
+    ██      ██  ██      ██  ██      ██  ██
+    ██      ██  ██      ██  ██████████  ██
+    ██      ██  ██      ██  ██          ██
+      ██████      ████████    ██████    ██
+    ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+    v0.1.0 · kimi-for-coding · your_project
+```
+
+`/splash` plays it again. It is grayscale like the rest of the shell, it redraws in place
+rather than clearing the screen, Ctrl+C cuts to the settled frame, and it gets out of the
+way on its own: a pipe, `NO_COLOR` or a window too narrow for the wordmark prints the
+one-line greeting instead, a window too short to redraw draws the settled frame without
+animating, and `ODEI_SPLASH=off` (or `=static`) makes either the rule.
+
 One-shot, non-interactive:
 
 ```bash
@@ -191,15 +211,72 @@ links keep their destination, because a terminal link you cannot copy is worse t
 you can see. `NO_COLOR`, a redirected stdout, or `ODEI_MARKDOWN=off` turns the whole
 thing off: piped output is byte-for-byte what the model produced.
 
+## What the agent is doing, at three depths
+
+An activity line says what ran, what the arguments added to that, what came
+back, how long it took, and the handle that reopens it — and a call that
+changed a file draws the change:
+
+```
+● 3 tool calls · 1 read · 1 edit · 1 command
+  ├ Read src/agent.rs · lines 120–319  142 lines  #1
+  ├ Edited src/ui.rs  +8 −3  #2
+  │  41    fn finish_tool_line(&mut self) {
+  │  42 -     if self.tool_line_open {
+  │  42 +     if self.tool_line_open && !self.quiet {
+  │  43        println!();
+  └ Ran cargo test --lib ✗  exit 101 · test result: FAILED. 1 failed  2.4s  #3
+    … 214 earlier lines · /call 3
+    thread 'ui::tests::a_narrow_window' panicked at src/ui.rs:1104
+    test result: FAILED. 121 passed; 1 failed
+```
+
+A failure always says why on its own line — a command by its exit code and
+its last word, a tool by its message — and shows the end of its output, the
+part that explains it, without being asked. Everything else is one line.
+
+Two commands move the whole shell up or down a level, and it is remembered:
+
+| Command | What a tool call shows |
+| --- | --- |
+| `/collapse` | one line each, nothing under it |
+| *(default)* | one line each, plus the diff when a file changed |
+| `/expand` | arguments, the whole diff, the output, the model's reasoning as it streams, and what each round trip cost |
+
+At full detail a turn narrates itself:
+
+```
+⏺ thinking
+  │ the edit tool reported line two but the file says three, worth a look
+
+  · 4.8k in · 121 out · 4.6k cached · 5.5s · 12% ctx
+● 2 tool calls · 1 read · 1 edit
+```
+
+Terminal output only grows downwards, so calls already drawn keep the shape
+they were drawn in. `/expand N`, `/expand last [k]` and `/expand all` reprint
+calls from the journal at full detail, right where you are — including in a
+resumed session. `/detail [collapsed|normal|expanded]` sets the level by name,
+`ODEI_DETAIL` sets it for a run, and the statusline names it whenever it is
+not the default.
+
+A diff is computed by the tool that made the change, while both sides of the
+file are still in hand, so it is the real change and not a guess: three lines
+of context around each hunk, touching hunks merged, a single `⋯` for the gap
+between them, line numbers from the file you now have, colour only on the
+number and the sign. Long lines are cut rather than wrapped, a bounded body is
+cut with a count, and a rewrite too large to align line by line says so
+instead of pretending.
+
 ## Inspecting a tool call
 
 Every completed activity line carries a handle:
 
 ```
 ● 3 tool calls · 2 reads · 1 command
-  ├ Read src/agent.rs  #1
-  ├ Searched TODO  #2
-  └ Ran cargo test --lib ✗  #3
+  ├ Read src/agent.rs  142 lines  #1
+  ├ Searched TODO  17 matches  #2
+  └ Ran cargo test --lib ✗  exit 101 · test result: FAILED  #3
 ```
 
 `/calls` lists the session's calls and lets you **click one**; `/call 3` goes
@@ -226,6 +303,9 @@ PAGER=cat GIT_PAGER=cat GIT_TERMINAL_PROMPT=0 /bin/zsh -lc 'cargo test --lib'
 running 214 tests
 ...
 ```
+
+A call that changed a file gets a `── Diff` section ahead of its arguments —
+for an edit, that *is* the arguments, read the way a person reads a change.
 
 For the `terminal` tool that block is the command that actually ran, env and
 shell flags included. For everything else it is an honest stand-in — the
@@ -273,9 +353,11 @@ when two of them disagree the one scoped nearest the files being touched wins.
 | `ODEI_MODEL` | model override |
 | `ODEI_BASE_URL` | endpoint override (default `https://api.kimi.com/coding`) |
 | `ODEI_PERMISSIONS` | `ask` / `auto` / `yolo` |
+| `ODEI_DETAIL` | `collapsed` / `normal` / `expanded` — how much of each tool call to draw |
 | `ODEI_MAX_AGENT_STEPS` | agent loop step cap (default 120) |
 | `ODEI_THEME` | `light` / `dark` (auto-detected otherwise) |
 | `ODEI_MARKDOWN` | `off` to print the model's markdown source verbatim |
+| `ODEI_SPLASH` | `off` for the one-line greeting, `static` for the settled wordmark |
 | `NO_COLOR` | disable styling |
 
 Profile data lives in `~/.odei`: `config.json`, `permissions.json`, `sessions/*.jsonl`,
@@ -309,8 +391,14 @@ odei serve [--workspace <dir>] [--resume last|<id>]
 
 One JSON object per line, both directions, nothing else on stdout.
 In: `prompt`, `approve`, `cancel`, `compact`, `sessions`, `calls`, `call`, `model`,
-`mode`, `exit`. Out: `ready`, `state`, `history`, `waiting`, `text`, `text_end`, `group`,
-`tool`, `approval`, `notice`, `turn_end`, `sessions`, `calls`, `call`, `error`, `fatal`.
+`mode`, `exit`. Out: `ready`, `state`, `history`, `waiting`, `thinking`, `step`, `text`,
+`text_end`, `group`, `tool`, `approval`, `notice`, `turn_end`, `sessions`, `calls`,
+`call`, `error`, `fatal`.
+
+A `tool` event carries what the shell draws, already worked out: the tool name, the
+label, the qualifier its arguments add, the one-glance `stat`, the elapsed `ms`, and —
+for a call that changed a file — the `diff` as hunks of typed lines. A front end renders
+a call without parsing tool output.
 
 `cancel` and `approve` are handled on the stdin reader thread because they have to land
 while the agent thread is blocked; everything else is queued for the loop.
