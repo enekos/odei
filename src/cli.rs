@@ -17,7 +17,8 @@ pub fn ask(config: Config, prompt: &str) -> i32 {
     let mut agent = Agent::new(config, session);
     let theme = Theme::detect();
     let interactive = std::io::IsTerminal::is_terminal(&std::io::stdout());
-    let mut sink = ShellSink::new(theme, interactive);
+    let detail = agent.config.detail;
+    let mut sink = ShellSink::new(theme, interactive, detail);
     CANCEL.store(false, std::sync::atomic::Ordering::Relaxed);
     match agent.run_user_turn(prompt, &CANCEL, &mut sink) {
         Ok(()) => {

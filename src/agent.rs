@@ -19,23 +19,57 @@ pub enum Approval {
     Deny,
 }
 
+/// A tool call about to run. The sink gets the arguments as well as the
+/// label, so it can say more than the verb and its first argument.
+pub struct ToolStart<'a> {
+    pub tool: &'a str,
+    pub label: &'a str,
+    pub input: &'a Value,
+    pub last_in_group: bool,
+}
+
+/// A tool call that has finished — everything a renderer could want about
+/// it, including what the model will *not* see: the untrimmed output and the
+/// diff a file-changing tool produced.
+pub struct ToolDone<'a> {
+    pub tool: &'a str,
+    pub label: &'a str,
+    pub input: &'a Value,
+    pub output: &'a str,
+    pub is_error: bool,
+    pub last_in_group: bool,
+    /// The journal's `#N` for what just ran, so the activity line can name
+    /// something `/call N` will reopen. `None` when nothing ran.
+    pub call: Option<usize>,
+    pub elapsed: std::time::Duration,
+    pub diff: Option<&'a crate::diff::FileDiff>,
+}
+
+/// One round trip to the model, for a shell that wants to show the cost of
+/// the turn as it accumulates.
+pub struct StepDone {
+    /// 1-based within this user turn.
+    pub step: usize,
+    pub usage: Usage,
+    pub elapsed: std::time::Duration,
+    /// Share of the model's window the request occupied, 0.0 if unknown.
+    pub context_fraction: f64,
+    pub tool_calls: usize,
+}
+
 /// UI hooks. The interactive shell renders activity lines and approval
 /// screens; `odei ask` prints plain text and denies interactive approvals.
 pub trait Sink {
-    fn on_waiting(&mut self);
+    fn on_waiting(&mut self, step: usize);
     fn on_text_delta(&mut self, text: &str);
     fn on_text_done(&mut self);
+    /// The model's own reasoning, when the provider streams it separately
+    /// from the answer. Only surfaced by sinks that ask for detail.
+    fn on_thinking(&mut self, _text: &str) {}
+    fn on_step_done(&mut self, _step: &StepDone) {}
     fn on_group_start(&mut self, summary: &str);
-    fn on_tool_start(&mut self, label: &str, last_in_group: bool);
-    /// `call` is the journal's `#N` for what just ran, so the activity line
-    /// can name something `/call N` will reopen. `None` when nothing ran.
-    fn on_tool_done(
-        &mut self,
-        label: &str,
-        is_error: bool,
-        last_in_group: bool,
-        call: Option<usize>,
-    );
+    fn on_tool_start(&mut self, start: &ToolStart);
+    fn on_tool_done(&mut self, done: &ToolDone);
     fn on_notice(&mut self, text: &str);
     fn request_approval(&mut self, tool: &str, label: &str, detail: &str) -> Approval;
 }
@@ -137,9 +171,10 @@ impl Agent {
         let system = context::system_prompt(&self.config);
         let gateway_tools = tools::gateway_tools();
 
-        for _step in 0..self.config.max_agent_steps {
-            sink.on_waiting();
+        for step in 0..self.config.max_agent_steps {
+            sink.on_waiting(step + 1);
             let mut saw_text = false;
+            let started = std::time::Instant::now();
             let result = provider::stream_turn(
                 &self.config,
                 &system,
@@ -151,9 +186,11 @@ impl Agent {
                         saw_text = true;
                         sink.on_text_delta(piece);
                     }
-                    StreamEvent::ToolUseStart { .. } | StreamEvent::ThinkingDelta(_) => {}
+                    StreamEvent::ThinkingDelta(piece) => sink.on_thinking(piece),
+                    StreamEvent::ToolUseStart { .. } => {}
                 },
             );
+            let elapsed = started.elapsed();
 
             let turn = match result {
                 Ok(turn) => turn,
@@ -197,6 +234,14 @@ impl Agent {
                     _ => None,
                 })
                 .collect();
+
+            sink.on_step_done(&StepDone {
+                step: step + 1,
+                usage: turn.usage,
+                elapsed,
+                context_fraction: self.context_fraction(),
+                tool_calls: tool_calls.len(),
+            });
 
             if !turn.content.is_empty() {
                 self.session
@@ -304,12 +349,18 @@ impl Agent {
                     permissions::remember_allow(&mut self.rules, spec.name, &target);
                 }
                 Approval::Deny => {
-                    sink.on_tool_done(
-                        &format!("Denied {running_label}"),
-                        true,
+                    let denied = format!("Denied {running_label}");
+                    sink.on_tool_done(&ToolDone {
+                        tool: spec.name,
+                        label: &denied,
+                        input,
+                        output: "",
+                        is_error: true,
                         last_in_group,
-                        None,
-                    );
+                        call: None,
+                        elapsed: std::time::Duration::ZERO,
+                        diff: None,
+                    });
                     return tools::ToolOutcome::err(
                         "the user denied permission for this action; do not retry it without new user intent",
                     );
@@ -317,22 +368,37 @@ impl Agent {
             }
         }
 
-        sink.on_tool_start(&running_label, last_in_group);
+        sink.on_tool_start(&ToolStart {
+            tool: spec.name,
+            label: &running_label,
+            input,
+            last_in_group,
+        });
         let started = std::time::Instant::now();
         let outcome = (spec.call)(&self.tool_context, input);
         let elapsed = started.elapsed();
+        let done_label = tools::activity_label(spec, input, true);
         // Journalled before the result is trimmed for the transcript, so the
         // record keeps everything the tool actually returned.
         let call = self.journal.record(
             spec.name,
-            &tools::activity_label(spec, input, true),
+            &done_label,
             input,
             &self.tool_context.workspace_root,
             elapsed,
             &outcome,
         );
-        let done_label = tools::activity_label(spec, input, true);
-        sink.on_tool_done(&done_label, outcome.is_error, last_in_group, Some(call));
+        sink.on_tool_done(&ToolDone {
+            tool: spec.name,
+            label: &done_label,
+            input,
+            output: &outcome.text,
+            is_error: outcome.is_error,
+            last_in_group,
+            call: Some(call),
+            elapsed,
+            diff: outcome.diff.as_ref(),
+        });
         outcome
     }
 }

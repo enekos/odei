@@ -13,14 +13,22 @@ use std::path::{Path, PathBuf};
 pub struct ToolOutcome {
     pub text: String,
     pub is_error: bool,
+    /// What a file-changing tool did to the file, computed while both sides
+    /// were still in hand. The model never sees this — it feeds the activity
+    /// line, the expanded body, and the `/call` report.
+    pub diff: Option<crate::diff::FileDiff>,
 }
 
 impl ToolOutcome {
     pub fn ok(text: impl Into<String>) -> Self {
-        ToolOutcome { text: text.into(), is_error: false }
+        ToolOutcome { text: text.into(), is_error: false, diff: None }
     }
     pub fn err(text: impl Into<String>) -> Self {
-        ToolOutcome { text: text.into(), is_error: true }
+        ToolOutcome { text: text.into(), is_error: true, diff: None }
+    }
+    pub fn with_diff(mut self, diff: crate::diff::FileDiff) -> Self {
+        self.diff = Some(diff);
+        self
     }
 }
 

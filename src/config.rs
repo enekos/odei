@@ -40,6 +40,81 @@ impl PermissionMode {
     }
 }
 
+/// How much of each tool call the shell shows. `Normal` is the default: one
+/// line per call, plus the diff when a file changed — the two things you
+/// almost always want. `/collapse` and `/expand` move between the three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Detail {
+    /// One line per call, nothing under it.
+    Collapsed,
+    /// One line per call, plus diffs and the reason a call failed.
+    Normal,
+    /// Everything: arguments, full diffs, output, per-step token accounting,
+    /// and the model's thinking as it streams.
+    Expanded,
+}
+
+impl Detail {
+    pub fn label(self) -> &'static str {
+        match self {
+            Detail::Collapsed => "collapsed",
+            Detail::Normal => "normal",
+            Detail::Expanded => "expanded",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "collapsed" | "collapse" | "compact" | "off" | "min" => Some(Detail::Collapsed),
+            "normal" | "default" | "auto" => Some(Detail::Normal),
+            // Not "all": /expand all reprints history, it does not set a level.
+            "expanded" | "expand" | "full" | "on" | "verbose" => Some(Detail::Expanded),
+            _ => None,
+        }
+    }
+
+    /// Lines of diff shown under a call. Enough at `Normal` to read a
+    /// hand-sized edit without scrolling anything off the screen.
+    pub fn diff_lines(self) -> usize {
+        match self {
+            Detail::Collapsed => 0,
+            Detail::Normal => 16,
+            Detail::Expanded => 200,
+        }
+    }
+
+    /// Lines of tool output shown under a call that succeeded.
+    pub fn output_lines(self) -> usize {
+        match self {
+            Detail::Collapsed | Detail::Normal => 0,
+            Detail::Expanded => 20,
+        }
+    }
+
+    /// Lines of output shown under a call that failed. A failure is the one
+    /// thing worth reading even when everything else is folded away.
+    pub fn error_lines(self) -> usize {
+        match self {
+            Detail::Collapsed => 0,
+            Detail::Normal => 6,
+            Detail::Expanded => 20,
+        }
+    }
+
+    pub fn shows_steps(self) -> bool {
+        matches!(self, Detail::Expanded)
+    }
+
+    pub fn shows_thinking(self) -> bool {
+        matches!(self, Detail::Expanded)
+    }
+
+    pub fn shows_arguments(self) -> bool {
+        matches!(self, Detail::Expanded)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StoredConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,6 +127,8 @@ pub struct StoredConfig {
     pub permissions: Option<PermissionMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Detail>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +138,8 @@ pub struct Config {
     pub model: String,
     pub base_url: String,
     pub permission_mode: PermissionMode,
+    /// How much of each tool call the shell draws (ODEI_DETAIL, /expand).
+    pub detail: Detail,
     pub max_agent_steps: usize,
     pub workspace_root: PathBuf,
     /// Mark cache breakpoints on the tools, the system prompt and the tail of
@@ -138,6 +217,12 @@ impl Config {
             .or(stored.permissions)
             .unwrap_or(PermissionMode::Auto);
 
+        let detail = std::env::var("ODEI_DETAIL")
+            .ok()
+            .and_then(|v| Detail::parse(&v))
+            .or(stored.detail)
+            .unwrap_or(Detail::Normal);
+
         let max_agent_steps = std::env::var("ODEI_MAX_AGENT_STEPS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -158,6 +243,7 @@ impl Config {
             model,
             base_url,
             permission_mode,
+            detail,
             max_agent_steps,
             workspace_root: workspace_root.to_path_buf(),
             prompt_cache,

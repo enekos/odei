@@ -146,7 +146,7 @@ struct EvalSink {
 }
 
 impl Sink for EvalSink {
-    fn on_waiting(&mut self) {}
+    fn on_waiting(&mut self, _step: usize) {}
 
     fn on_text_delta(&mut self, text: &str) {
         if !self.saw_tool {
@@ -159,18 +159,11 @@ impl Sink for EvalSink {
 
     fn on_group_start(&mut self, _summary: &str) {}
 
-    fn on_tool_start(&mut self, _label: &str, _last_in_group: bool) {
+    fn on_tool_start(&mut self, _start: &crate::agent::ToolStart) {
         self.saw_tool = true;
     }
 
-    fn on_tool_done(
-        &mut self,
-        _label: &str,
-        _is_error: bool,
-        _last_in_group: bool,
-        _call: Option<usize>,
-    ) {
-    }
+    fn on_tool_done(&mut self, _done: &crate::agent::ToolDone) {}
 
     fn on_notice(&mut self, text: &str) {
         if text.starts_with("stopped after") {
@@ -726,6 +719,7 @@ mod tests {
             ms: 1,
             is_error,
             output: String::new(),
+            diff: None,
         }
     }
 
@@ -762,6 +756,7 @@ mod tests {
             model: "kimi-for-coding".into(),
             base_url: "http://localhost".into(),
             permission_mode: PermissionMode::Auto,
+            detail: crate::config::Detail::Normal,
             max_agent_steps: 8,
             workspace_root: std::env::temp_dir(),
             prompt_cache: true,
