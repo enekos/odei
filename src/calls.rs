@@ -261,6 +261,32 @@ pub fn repro(record: &Record) -> Repro {
             quote(&arg(input, "source")),
             quote(&arg(input, "destination"))
         )),
+        // The lookup is native, so this is the shape of it rather than a
+        // command that would give the same answer.
+        "worktree" => {
+            let raw = arg(input, "query");
+            let (dir, at) = match raw.split_once('@') {
+                Some((dir, branch)) => (dir.to_string(), branch.to_string()),
+                None => (raw, String::new()),
+            };
+            let branch = if at.is_empty() { arg(input, "branch") } else { at };
+            let lookup = if dir.is_empty() {
+                ".".to_string()
+            } else {
+                format!("$(zoxide query {})", quote(&dir))
+            };
+            let git = format!("git -C \"{lookup}\"");
+            approx(match arg(input, "action").as_str() {
+                "resolve" if branch.is_empty() => format!("zoxide query {}", quote(&dir)),
+                "resolve" => format!("{git} worktree list  # then pick {branch}"),
+                "list" | "merged" | "clean" => format!("{git} worktree list"),
+                "create" | "track" => {
+                    format!("{git} worktree add <path> {}", quote(&branch))
+                }
+                "run" => format!("(cd \"{lookup}\" && {})", arg(input, "command")),
+                other => format!("# worktree {other}"),
+            })
+        }
         "web_fetch" => approx(format!("curl -sL {}", quote(&arg(input, "url")))),
         "web_search" => approx(format!(
             "curl -s {}",
@@ -370,6 +396,29 @@ mod tests {
         assert_eq!(quote("two words"), "'two words'");
         assert_eq!(quote("it's"), "'it'\\''s'");
         assert_eq!(quote("a; rm -rf /"), "'a; rm -rf /'");
+    }
+
+    #[test]
+    fn worktree_repro_shows_the_lookup_it_did() {
+        let line = |input| repro(&record("worktree", input)).lines.join("\n");
+        assert_eq!(line(json!({"action": "resolve", "query": "data"})), "zoxide query data");
+        assert_eq!(
+            line(json!({"action": "list", "query": "data"})),
+            "git -C \"$(zoxide query data)\" worktree list"
+        );
+        assert_eq!(
+            line(json!({"action": "run", "query": "data", "command": "cargo test"})),
+            "(cd \"$(zoxide query data)\" && cargo test)"
+        );
+        // The branch is carried either inside the query or beside it.
+        for input in [
+            json!({"action": "create", "query": "data@new"}),
+            json!({"action": "create", "query": "data", "branch": "new"}),
+        ] {
+            assert_eq!(line(input), "git -C \"$(zoxide query data)\" worktree add <path> new");
+        }
+        // An empty query is the workspace, which needs no lookup.
+        assert_eq!(line(json!({"action": "list"})), "git -C \".\" worktree list");
     }
 
     #[test]

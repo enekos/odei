@@ -59,7 +59,24 @@ pub fn remember_allow(store: &mut RuleStore, tool: &str, target: &str) -> String
 }
 
 fn rule_target(spec: &ToolSpec, input: &Value) -> String {
-    input[spec.label_arg].as_str().unwrap_or("").to_string()
+    let target = input[spec.label_arg].as_str().unwrap_or("");
+    if spec.name == "worktree" {
+        // Approving a lookup must not quietly approve a deletion, so which
+        // action was approved is part of the key.
+        return format!("{}:{target}", input["action"].as_str().unwrap_or(""));
+    }
+    target.to_string()
+}
+
+/// What "always allow" stores. Terminal rules keep only the first command
+/// token, so the rule generalises to the whole tool; everything else is
+/// remembered as it will be matched.
+pub fn remember_target(spec: &ToolSpec, input: &Value) -> String {
+    if spec.name == "terminal" {
+        let command = input[spec.label_arg].as_str().unwrap_or("");
+        return command.split_whitespace().next().unwrap_or("").to_string();
+    }
+    rule_target(spec, input)
 }
 
 fn rule_matches(rule: &Rule, tool: &str, target: &str) -> bool {
@@ -130,6 +147,19 @@ fn command_is_sensitive(command: &str) -> bool {
         || lower.trim_start().starts_with("rm ") && lower.contains(" -")
 }
 
+/// The worktree tool spans a lookup and a deletion, so it is gated per action
+/// rather than by the spec's single flag: looking is free in every mode,
+/// clean always asks, and run is judged like any other command.
+fn worktree_decision(mode: PermissionMode, input: &Value) -> Decision {
+    match input["action"].as_str().unwrap_or_default() {
+        "resolve" | "list" | "merged" => Decision::Allow,
+        _ if mode != PermissionMode::Auto => Decision::NeedsApproval,
+        "create" | "track" => Decision::Allow,
+        "run" if !command_is_sensitive(input["command"].as_str().unwrap_or("")) => Decision::Allow,
+        _ => Decision::NeedsApproval,
+    }
+}
+
 pub fn classify(
     ctx: &ToolContext,
     rules: &RuleStore,
@@ -157,6 +187,10 @@ pub fn classify(
             }
         }
         return Decision::Allow;
+    }
+
+    if spec.name == "worktree" {
+        return worktree_decision(mode, input);
     }
 
     match mode {
@@ -241,6 +275,47 @@ mod tests {
         assert_eq!(
             classify(&ctx(), &rules, PermissionMode::Yolo, spec("write_file"), &input),
             Decision::Allow
+        );
+    }
+
+    #[test]
+    fn worktree_lookups_are_free_but_cleanup_asks() {
+        let rules = RuleStore::default();
+        let decide = |mode, input: &Value| classify(&ctx(), &rules, mode, spec("worktree"), input);
+        for action in ["resolve", "list", "merged"] {
+            let input = json!({"action": action, "query": "odei"});
+            assert_eq!(decide(PermissionMode::Ask, &input), Decision::Allow, "{action}");
+        }
+        let clean = json!({"action": "clean", "query": "odei"});
+        assert_eq!(decide(PermissionMode::Auto, &clean), Decision::NeedsApproval);
+        assert_eq!(decide(PermissionMode::Yolo, &clean), Decision::Allow);
+        let create = json!({"action": "create", "query": "odei@feat-x"});
+        assert_eq!(decide(PermissionMode::Auto, &create), Decision::Allow);
+        assert_eq!(decide(PermissionMode::Ask, &create), Decision::NeedsApproval);
+
+        // Always-allowing one action leaves the destructive one asking.
+        let mut rules = RuleStore::default();
+        rules.rules.push(Rule {
+            id: "rule-1".into(),
+            effect: "allow".into(),
+            tool: "worktree".into(),
+            target: remember_target(spec("worktree"), &create),
+        });
+        assert_eq!(rules.rules[0].target, "create:odei@feat-x");
+        let remembered =
+            |input: &Value| classify(&ctx(), &rules, PermissionMode::Ask, spec("worktree"), input);
+        assert_eq!(remembered(&create), Decision::Allow);
+        assert_eq!(
+            remembered(&json!({"action": "clean", "query": "odei@feat-x"})),
+            Decision::NeedsApproval
+        );
+        assert_eq!(
+            decide(PermissionMode::Auto, &json!({"action": "run", "command": "cargo test"})),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide(PermissionMode::Auto, &json!({"action": "run", "command": "git push"})),
+            Decision::NeedsApproval
         );
     }
 
