@@ -3,6 +3,7 @@
 
 mod agent;
 mod cli;
+mod compact;
 mod config;
 mod context;
 mod permissions;

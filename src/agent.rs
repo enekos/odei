@@ -2,6 +2,7 @@
 //! permission gate, feed results back, repeat until the model ends its turn
 //! or the step cap is reached (ODEI_MAX_AGENT_STEPS).
 
+use crate::compact;
 use crate::config::Config;
 use crate::context;
 use crate::permissions::{self, Decision, RuleStore};
@@ -37,13 +38,71 @@ pub struct Agent {
     pub session: Session,
     pub turns: u64,
     pub total_usage: Usage,
+    /// Input tokens on the most recent request — the live context size, as
+    /// opposed to `total_usage`, which accumulates over the session.
+    pub last_input_tokens: u64,
 }
 
 impl Agent {
     pub fn new(config: Config, session: Session) -> Agent {
         let tool_context = ToolContext::new(&config.workspace_root);
         let rules = permissions::load_rules();
-        Agent { config, tool_context, rules, session, turns: 0, total_usage: Usage::default() }
+        Agent {
+            config,
+            tool_context,
+            rules,
+            session,
+            turns: 0,
+            total_usage: Usage::default(),
+            last_input_tokens: 0,
+        }
+    }
+
+    /// Fraction of the model's window the last request occupied.
+    pub fn context_fraction(&self) -> f64 {
+        if self.last_input_tokens == 0 {
+            return 0.0;
+        }
+        self.last_input_tokens as f64 / self.config.context_window() as f64
+    }
+
+    /// Summarize the older turns and splice the brief in. Returns a one-line
+    /// report for the caller to surface.
+    pub fn compact_now(
+        &mut self,
+        cancel: &AtomicBool,
+        sink: &mut dyn Sink,
+    ) -> Result<String, String> {
+        let Some(cut) = compact::plan_cut(&self.session.messages) else {
+            return Ok("not enough history yet to be worth compacting".into());
+        };
+        sink.on_notice(&format!("compacting {cut} earlier messages…"));
+        let summary = compact::summarize(&self.config, &self.session.messages[..cut], cancel)?;
+        let mut kept = self.session.messages[cut..].to_vec();
+        kept[0].content.insert(
+            0,
+            ContentBlock::Text {
+                text: format!("# Earlier in this session, compacted\n\n{summary}\n\n---\n\n"),
+            },
+        );
+        self.session.messages = kept;
+        self.session.rewrite();
+        // The next response tells us the real figure; until then assume relief.
+        self.last_input_tokens = 0;
+        Ok(format!("compacted {cut} messages into a {}-word brief", summary.split_whitespace().count()))
+    }
+
+    /// Compact automatically once the window is most of the way full.
+    fn compact_if_needed(&mut self, cancel: &AtomicBool, sink: &mut dyn Sink) {
+        const TRIGGER: f64 = 0.75;
+        if self.context_fraction() < TRIGGER {
+            return;
+        }
+        match self.compact_now(cancel, sink) {
+            Ok(report) => sink.on_notice(&report),
+            // Compaction is an optimisation; a failure must not kill the turn.
+            Err(e) => sink.on_notice(&format!("could not compact ({e}); continuing")),
+        }
     }
 
     pub fn run_user_turn(
@@ -58,6 +117,7 @@ impl Agent {
             context::runtime_context(&self.config.workspace_root),
             user_text
         );
+        self.compact_if_needed(cancel, sink);
         self.session.append(Message::user_text(&contextualized));
         self.turns += 1;
 
@@ -104,6 +164,9 @@ impl Agent {
 
             self.total_usage.input_tokens += turn.usage.input_tokens;
             self.total_usage.output_tokens += turn.usage.output_tokens;
+            if turn.usage.input_tokens > 0 {
+                self.last_input_tokens = turn.usage.input_tokens;
+            }
             crate::session::record_usage(&self.config.model, turn.usage);
 
             let tool_calls: Vec<(String, String, Value)> = turn
@@ -134,9 +197,16 @@ impl Agent {
             for (index, (id, name, input)) in tool_calls.into_iter().enumerate() {
                 let last = index + 1 == total;
                 let outcome = self.execute_tool(&name, &input, last, cancel, sink);
+                // Oversized results go to the store; the transcript keeps a
+                // preview plus a handle the model can page through.
+                let content = if outcome.text.len() > tools::results::INLINE_CAP {
+                    self.tool_context.results.preview(&outcome.text)
+                } else {
+                    outcome.text
+                };
                 results.push(ContentBlock::ToolResult {
                     tool_use_id: id,
-                    content: outcome.text,
+                    content,
                     is_error: outcome.is_error,
                 });
             }

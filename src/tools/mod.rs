@@ -2,6 +2,7 @@
 //! the model sees, with execution implemented natively in Rust.
 
 pub mod fs;
+pub mod results;
 pub mod terminal;
 pub mod web;
 
@@ -51,6 +52,7 @@ pub struct ToolSpec {
 pub struct ToolContext {
     pub workspace_root: PathBuf,
     pub terminal: terminal::TerminalRegistry,
+    pub results: results::Store,
 }
 
 impl ToolContext {
@@ -58,6 +60,7 @@ impl ToolContext {
         ToolContext {
             workspace_root: workspace_root.to_path_buf(),
             terminal: terminal::TerminalRegistry::default(),
+            results: results::Store::new(),
         }
     }
 
@@ -181,7 +184,7 @@ macro_rules! search_root_desc {
     };
 }
 
-static REGISTRY: [ToolSpec; 15] = [
+static REGISTRY: [ToolSpec; 16] = [
     ToolSpec {
         name: "list_files",
         description: "Show what a single directory contains: entry names, with sizes for files and a trailing slash for subdirectories. It does not recurse and does not open anything. Use it to see what is actually in a folder before choosing a path to read. To find files by name across a tree use glob_files; to search inside files use grep_files.",
@@ -415,11 +418,11 @@ static REGISTRY: [ToolSpec; 15] = [
     },
     ToolSpec {
         name: "terminal",
-        description: "Run shell commands and drive long-lived sessions. Pick one action and fill in only the fields that action needs. Use exec for anything that finishes on its own — builds, tests, git, one-off commands — and you get the combined output plus the exit code, bounded by timeout_ms. Use start for something that keeps running, like a dev server, a REPL, or a program that wants input; it returns a session_id you then drive with read for new output, write to send stdin, wait to block until it exits, signal to interrupt or terminate it, list to see what is alive, and close to shut it down and collect anything unread. profile=user runs through the login shell so the user's aliases and environment apply; profile=clean skips their startup files.",
+        description: "Run shell commands and drive long-lived sessions. Everything runs on a real terminal, so programs behave as they would for a person at a prompt: colour, progress bars and interactive prompts all work, and output comes back with escape codes removed and rewritten progress lines collapsed to their final state. Pick one action and fill in only the fields it needs. Use exec for anything that finishes by itself — builds, tests, git, one-off commands — and you get the combined output plus the exit code, bounded by timeout_ms. Use start for something that keeps running, like a dev server, a REPL, or a program that wants typing; it hands back a session_id you then drive with read for new output, write to send keystrokes, wait to block until it exits, signal to interrupt or terminate it, resize to change the viewport, list to see what is alive, and close to shut it down and collect anything unread. profile=user runs through the login shell so aliases and environment apply; profile=clean skips the startup files.",
         input_schema: || json!({
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["exec", "start", "read", "write", "wait", "list", "signal", "close"], "description": "Which operation to perform. exec and start take a command; read, write, wait, signal, and close take a session_id; list takes neither."},
+                "action": {"type": "string", "enum": ["exec", "start", "read", "write", "wait", "list", "signal", "resize", "close"], "description": "Which operation to perform. exec and start take a command; read, write, wait, signal, resize, and close take a session_id; list takes neither."},
                 "command": {"type": "string", "description": "Shell command to run. Required for exec. Optional for start — omit it to get a bare interactive shell."},
                 "cwd": {"type": "string", "description": "Directory to run in, for exec or start. Defaults to the workspace root."},
                 "profile": {"type": "string", "enum": ["clean", "user"], "description": "user (the default) runs through the login shell so startup files apply. clean skips them for a predictable environment."},
@@ -427,7 +430,9 @@ static REGISTRY: [ToolSpec; 15] = [
                 "session_id": {"type": "string", "description": "Which session to act on. Required for read, write, wait, signal, and close; returned to you by start."},
                 "text": {"type": "string", "description": "Text to send to the session's stdin, for write. Include a trailing newline if the program expects one."},
                 "wait_ceiling_ms": {"type": "integer", "description": "Longest wait may block before reporting that the session is still running. Defaults to 30000."},
-                "signal": {"type": "string", "enum": ["hangup", "interrupt", "quit", "terminate", "kill"], "description": "Which signal to deliver, for signal. interrupt is the usual Ctrl+C; kill cannot be caught."}
+                "signal": {"type": "string", "enum": ["hangup", "interrupt", "quit", "terminate", "kill"], "description": "Which signal to deliver, for signal. interrupt is the usual Ctrl+C; kill cannot be caught. Signals reach the whole process group, so a shell's children get them too."},
+                "rows": {"type": "integer", "description": "Terminal height in lines, for start or resize. Defaults to 40."},
+                "columns": {"type": "integer", "description": "Terminal width in columns, for start or resize. Defaults to 120. Programs wrap and truncate to this, so widen it if output looks clipped."}
             },
             "required": ["action"]
         }),
@@ -438,6 +443,27 @@ static REGISTRY: [ToolSpec; 15] = [
         label_arg: "command",
         label_default: "terminal",
         call: terminal::terminal,
+    },
+    ToolSpec {
+        name: "read_tool_result",
+        description: "Read more of an earlier tool result that was too large to include in full. When a result is truncated you are given a handle like tr-1770000000-3; pass it here to page through the text with offset and length, or to find something in it with query. Use it when the part you need was in the omitted middle. It only reaches results from this session, and cannot open arbitrary files — that is read_file's job.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "handle": {"type": "string", "description": "The handle from the truncation notice, e.g. tr-1770000000-3."},
+                "offset": {"type": "integer", "description": "Byte offset to start reading from. The truncation notice tells you where the head left off. Defaults to 0."},
+                "length": {"type": "integer", "description": "How many bytes to return. Defaults to 8192 and is capped by the tool."},
+                "query": {"type": "string", "description": "Literal text to find. When set, returns a window around each match with its offset, instead of a plain range — usually the fastest way into a long log."}
+            },
+            "required": ["handle"]
+        }),
+        activity_kind: ActivityKind::Read,
+        requires_approval: false,
+        action_label: "Reading",
+        completed_action_label: "Read",
+        label_arg: "handle",
+        label_default: "result",
+        call: results::read_tool_result,
     },
     ToolSpec {
         name: "web_fetch",

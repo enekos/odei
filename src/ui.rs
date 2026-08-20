@@ -225,10 +225,9 @@ fn statusline(theme: &Theme, agent: &Agent) -> String {
     if let Some(branch) = git_branch(&agent.config.workspace_root) {
         segments.push(branch);
     }
-    let used = agent.total_usage.input_tokens;
-    if used > 0 {
-        let pct = (used as f64 / agent.config.context_window() as f64 * 100.0).min(100.0);
-        segments.push(format!("{pct:.0}% ctx"));
+    let fraction = agent.context_fraction();
+    if fraction > 0.0 {
+        segments.push(format!("{:.0}% ctx", (fraction * 100.0).min(100.0)));
     }
     if let Some(title) = &agent.session.meta.title {
         segments.push(title.clone());
@@ -250,7 +249,7 @@ const HELP: &[(&str, &str)] = &[
     ("/status", "where I am pointed and how I am configured"),
     ("/stats", "turns and tokens for this session"),
     ("/usage (/cost)", "token totals per model across all sessions"),
-    ("/compact", "shrink old tool output to free up context"),
+    ("/compact", "summarize older turns to free up context"),
     ("/copy", "put my last reply on the clipboard"),
     ("/setup", "store a Kimi API key"),
     ("/version", "print the version"),
@@ -288,27 +287,6 @@ fn last_assistant_text(agent: &Agent) -> Option<String> {
     })
 }
 
-/// Keep the last few messages intact; blank out old tool results, which are
-/// the bulk of context weight.
-fn compact(agent: &mut Agent) -> usize {
-    let keep_from = agent.session.messages.len().saturating_sub(6);
-    let mut compacted = 0;
-    for message in agent.session.messages.iter_mut().take(keep_from) {
-        for block in message.content.iter_mut() {
-            if let ContentBlock::ToolResult { content, .. } = block {
-                if content.len() > 200 {
-                    *content = format!(
-                        "[compacted: {} bytes of earlier tool output removed]",
-                        content.len()
-                    );
-                    compacted += 1;
-                }
-            }
-        }
-    }
-    agent.session.rewrite();
-    compacted
-}
 
 pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
     let theme = Theme::detect();
@@ -527,6 +505,12 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                         "turns {} · input tokens {} · output tokens {}",
                         agent.turns, agent.total_usage.input_tokens, agent.total_usage.output_tokens
                     );
+                    println!(
+                        "context {} of {} tokens ({:.0}%)",
+                        agent.last_input_tokens,
+                        agent.config.context_window(),
+                        agent.context_fraction() * 100.0
+                    );
                 }
                 "usage" | "cost" => {
                     let path = crate::config::odei_home().join("usage.jsonl");
@@ -552,8 +536,12 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                     }
                 }
                 "compact" => {
-                    let n = compact(&mut agent);
-                    println!("{}compacted {n} earlier tool results{}", theme.dim, theme.reset());
+                    CANCEL.store(false, Ordering::Relaxed);
+                    let mut sink = ShellSink::new(theme, true);
+                    match agent.compact_now(&CANCEL, &mut sink) {
+                        Ok(report) => println!("{}{report}{}", theme.dim, theme.reset()),
+                        Err(e) => println!("{}could not compact: {e}{}", theme.warning, theme.reset()),
+                    }
                 }
                 "copy" => match last_assistant_text(&agent) {
                     Some(text) => {

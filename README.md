@@ -79,8 +79,37 @@ Switch at runtime with `/model k3`, or persistently via `ODEI_MODEL`.
 ## Tools
 
 `read_file`, `write_file`, `edit_file`, `list_files`, `glob_files`, `grep_files`, `delete_file`,
-`rename_file`, `copy_file`, `create_folder`, `file_info`, `semantic_search`, `terminal`
-(foreground exec plus durable background sessions), `web_fetch`, `web_search`.
+`rename_file`, `copy_file`, `create_folder`, `file_info`, `semantic_search`, `terminal`,
+`read_tool_result`, `web_fetch`, `web_search`.
+
+### The terminal is a real terminal
+
+Commands run on a pseudo-terminal, not a pipe, so programs take the same code path they would
+for a person at a prompt — colour, progress bars, and anything that checks `isatty` all behave.
+Output comes back with escape sequences removed and rewritten progress lines collapsed to their
+final state, so a spinner costs one line instead of ten thousand.
+
+`exec` runs to completion and returns combined output plus the exit code. `start` leaves a
+session alive and hands back an id for `read`, `write`, `wait`, `signal`, `resize`, and `close`,
+which is how a dev server, a REPL, or anything that wants typing gets driven. Signals reach the
+whole process group, so a shell's children go down with it. Captured commands run with
+`PAGER=cat` and `GIT_TERMINAL_PROMPT=0` — a command that stops for a pager would otherwise just
+burn its timeout.
+
+## Context management
+
+Two mechanisms keep a long session inside the model's window.
+
+**Large results go off-transcript.** A tool result over 8 KB is written to
+`~/.odei/tool-results/` and the conversation keeps only its head, its tail, and a handle. The
+model reaches the rest with `read_tool_result`, by byte range or by searching it. A 170 KB build
+log costs about 8 KB of context until something in the middle actually matters.
+
+**Older turns get summarized.** At 75% of the window, odei asks the model to compact the earlier
+history into a dense brief — intent, decisions, paths touched, commands and their results, what
+is verified, what is still open — and replaces those turns with it. `/compact` does the same on
+demand. The cut is only ever taken at a real user turn, so a tool call is never separated from
+its result.
 
 ## Project instructions
 
@@ -102,7 +131,7 @@ when two of them disagree the one scoped nearest the files being touched wins.
 | `NO_COLOR` | disable styling |
 
 Profile data lives in `~/.odei`: `config.json`, `permissions.json`, `sessions/*.jsonl`,
-`usage.jsonl`, `history`.
+`tool-results/`, `usage.jsonl`, `history`. Stored tool results are pruned after 7 days.
 
 ## Develop
 
@@ -113,8 +142,8 @@ cargo clippy
 ```
 
 Module map: `provider.rs` (Kimi SSE client) · `agent.rs` (tool loop) · `tools/` (registry +
-implementations) · `ui.rs` (interactive shell) · `permissions.rs` · `session.rs` · `context.rs`
-(system prompt + runtime context) · `theme.rs`.
+implementations) · `ui.rs` (interactive shell) · `permissions.rs` · `session.rs` · `compact.rs`
+(history summarization) · `context.rs` (system prompt + runtime context) · `theme.rs`.
 
 ## Not implemented
 

@@ -275,6 +275,26 @@ fn read_stream(
     Ok(TurnResult { content, stop_reason, usage })
 }
 
+/// One turn with no tools and no streaming surface, for internal work like
+/// summarizing a transcript. Returns the concatenated text.
+pub fn complete(
+    config: &Config,
+    system: &str,
+    messages: &[Message],
+    cancel: &AtomicBool,
+) -> Result<String, ProviderError> {
+    let turn = stream_turn(config, system, messages, &[], cancel, &mut |_| {})?;
+    Ok(turn
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
 /// Non-streaming utility request used by `odei doctor` for connectivity checks.
 pub fn check_connectivity(config: &Config) -> Result<(), ProviderError> {
     let key = config.api_key.as_deref().ok_or(ProviderError::MissingKey)?;
