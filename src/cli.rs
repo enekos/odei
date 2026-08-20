@@ -124,6 +124,8 @@ pub fn help() -> i32 {
     println!("  odei sessions              list saved sessions");
     println!("  odei session resume last   resume the latest session for this workspace");
     println!("  odei session resume --id <id>");
+    println!("  odei serve [--workspace <dir>] [--resume last|<id>]");
+    println!("                             headless NDJSON agent on stdio (drives the macOS app)");
     println!("  odei setup                 store a Kimi Code API key");
     println!("  odei status                show runtime configuration");
     println!("  odei doctor                check configuration and connectivity");
