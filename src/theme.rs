@@ -35,6 +35,21 @@ pub struct Theme {
     // (#E5484D). The line text stays neutral.
     pub diff_added_marker: &'static str,
     pub diff_removed_marker: &'static str,
+    // Markdown. Structure is carried by weight, spacing and a background —
+    // never by hue, so the grayscale rule survives an answer full of code
+    // and tables.
+    pub heading: &'static str,
+    pub strong: &'static str,
+    pub emphasis: &'static str,
+    pub strike: &'static str,
+    pub link: &'static str,
+    /// `inline code`: a panel rather than a colour.
+    pub code: &'static str,
+    pub code_block: &'static str,
+    pub quote: &'static str,
+    pub quote_bar: &'static str,
+    pub bullet: &'static str,
+    pub table_header: &'static str,
 }
 
 const DARK: Theme = Theme {
@@ -55,6 +70,17 @@ const DARK: Theme = Theme {
     permission_auto: "\x1b[38;5;252m",
     diff_added_marker: "\x1b[38;2;48;164;108m",
     diff_removed_marker: "\x1b[38;2;229;72;77m",
+    heading: "\x1b[1;38;5;255m",
+    strong: "\x1b[1m",
+    emphasis: "\x1b[3m",
+    strike: "\x1b[9m",
+    link: "\x1b[4m",
+    code: "\x1b[48;5;236m\x1b[38;5;253m",
+    code_block: "\x1b[38;5;252m",
+    quote: "\x1b[3;38;5;245m",
+    quote_bar: "\x1b[38;5;240m",
+    bullet: "\x1b[38;5;245m",
+    table_header: "\x1b[1;38;5;255m",
 };
 
 const LIGHT: Theme = Theme {
@@ -75,6 +101,17 @@ const LIGHT: Theme = Theme {
     permission_auto: "\x1b[38;5;238m",
     diff_added_marker: "\x1b[38;2;48;164;108m",
     diff_removed_marker: "\x1b[38;2;229;72;77m",
+    heading: "\x1b[1;38;5;235m",
+    strong: "\x1b[1m",
+    emphasis: "\x1b[3m",
+    strike: "\x1b[9m",
+    link: "\x1b[4m",
+    code: "\x1b[48;5;253m\x1b[38;5;235m",
+    code_block: "\x1b[38;5;238m",
+    quote: "\x1b[3;38;5;247m",
+    quote_bar: "\x1b[38;5;250m",
+    bullet: "\x1b[38;5;247m",
+    table_header: "\x1b[1;38;5;235m",
 };
 
 const PLAIN: Theme = Theme {
@@ -95,7 +132,28 @@ const PLAIN: Theme = Theme {
     permission_auto: "",
     diff_added_marker: "",
     diff_removed_marker: "",
+    heading: "",
+    strong: "",
+    emphasis: "",
+    strike: "",
+    link: "",
+    code: "",
+    code_block: "",
+    quote: "",
+    quote_bar: "",
+    bullet: "",
+    table_header: "",
 };
+
+/// The unstyled theme, also used to measure markup-free text.
+pub fn plain() -> &'static Theme {
+    &PLAIN
+}
+
+#[cfg(test)]
+pub fn dark() -> &'static Theme {
+    &DARK
+}
 
 impl Theme {
     pub fn detect() -> &'static Theme {

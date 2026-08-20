@@ -8,6 +8,7 @@ mod compact;
 mod config;
 mod context;
 mod inspect;
+mod markdown;
 mod permissions;
 mod provider;
 mod session;
