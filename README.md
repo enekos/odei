@@ -113,6 +113,42 @@ whole process group, so a shell's children go down with it. Captured commands ru
 `PAGER=cat` and `GIT_TERMINAL_PROMPT=0` — a command that stops for a pager would otherwise just
 burn its timeout.
 
+## Markdown, rendered as it streams
+
+The model writes markdown, so the shell reads markdown — while the answer is still
+arriving, not after it lands. Headings and `**strong**` become weight, `` `code` `` a
+panel, lists get real bullets and hanging indents, `- [x]` a checkbox, block quotes a
+bar, and tables are measured, aligned, and folded to fit:
+
+```
+  Tool       │    Cap │ Off-transcript │ Notes
+  ───────────┼────────┼────────────────┼──────────────────────────────────
+  read_file  │   8 KB │      yes       │ truncation adds a remainder map
+  terminal   │ 256 KB │      yes       │ pty output, escapes stripped and
+             │        │                │ progress lines collapsed
+```
+
+Column widths come from the content, `:---:` and `---:` are honoured, and a table too
+wide for the terminal has its widest columns squeezed and its cells folded rather than
+wrapping into nonsense.
+
+Three things it takes care to get right:
+
+- **Prose reflows.** A model hard-wraps its paragraphs at its own measure; a source
+  newline is treated as the space it stands for, so paragraphs and list items rewrap to
+  *your* width instead of breaking twice.
+- **Unfinished markup is not guessed at.** Output pauses at an opening marker until its
+  closer arrives — so `**bold**` never bolds the rest of a paragraph, and a marker that
+  turns out to be alone (`*.rs`, `2 * 3`, `snake_case`) prints as itself.
+- **It stays a stream.** Only two things are ever buffered: the start of a line, until
+  its shape is certain, and a table, until its last row is in. Everything else appears
+  word by word.
+
+Code blocks are left exactly as written — no markup is interpreted inside them — and
+links keep their destination, because a terminal link you cannot copy is worse than one
+you can see. `NO_COLOR`, a redirected stdout, or `ODEI_MARKDOWN=off` turns the whole
+thing off: piped output is byte-for-byte what the model produced.
+
 ## Inspecting a tool call
 
 Every completed activity line carries a handle:
@@ -197,6 +233,7 @@ when two of them disagree the one scoped nearest the files being touched wins.
 | `ODEI_PERMISSIONS` | `ask` / `auto` / `yolo` |
 | `ODEI_MAX_AGENT_STEPS` | agent loop step cap (default 120) |
 | `ODEI_THEME` | `light` / `dark` (auto-detected otherwise) |
+| `ODEI_MARKDOWN` | `off` to print the model's markdown source verbatim |
 | `NO_COLOR` | disable styling |
 
 Profile data lives in `~/.odei`: `config.json`, `permissions.json`, `sessions/*.jsonl`,

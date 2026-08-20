@@ -5,6 +5,7 @@
 
 use crate::agent::{Agent, Approval, Sink};
 use crate::config::{Config, PermissionMode, KNOWN_MODELS};
+use crate::markdown;
 use crate::provider::ContentBlock;
 use crate::session::{self, Session};
 use crate::theme::{self, Theme};
@@ -32,6 +33,9 @@ pub fn install_sigint_handler() {
 
 pub struct ShellSink<'t> {
     theme: &'t Theme,
+    /// The model writes markdown; this turns it into terminal output as it
+    /// streams.
+    markdown: markdown::Renderer<'t>,
     waiting_line: bool,
     tool_line_open: bool,
     printed_text: bool,
@@ -40,7 +44,14 @@ pub struct ShellSink<'t> {
 
 impl<'t> ShellSink<'t> {
     pub fn new(theme: &'t Theme, interactive: bool) -> Self {
-        ShellSink { theme, waiting_line: false, tool_line_open: false, printed_text: false, interactive }
+        ShellSink {
+            theme,
+            markdown: markdown::Renderer::new(theme),
+            waiting_line: false,
+            tool_line_open: false,
+            printed_text: false,
+            interactive,
+        }
     }
 
     fn clear_transient(&mut self) {
@@ -54,6 +65,17 @@ impl<'t> ShellSink<'t> {
         if self.tool_line_open {
             println!();
             self.tool_line_open = false;
+        }
+    }
+
+    /// Close off any half-rendered markdown before something else prints.
+    /// The agent ends a text run before it runs tools, so this is a
+    /// backstop — but a stray tool line inside an open table would be
+    /// unreadable.
+    fn finish_markdown(&mut self) {
+        if !self.markdown.idle() {
+            print!("{}", self.markdown.finish());
+            let _ = std::io::stdout().flush();
         }
     }
 }
@@ -72,24 +94,26 @@ impl Sink for ShellSink<'_> {
     fn on_text_delta(&mut self, text: &str) {
         self.clear_transient();
         self.finish_tool_line();
-        if !self.printed_text {
-            self.printed_text = true;
-        }
-        print!("{text}");
+        self.printed_text = true;
+        print!("{}", self.markdown.push(text));
         let _ = std::io::stdout().flush();
     }
 
     fn on_text_done(&mut self) {
         self.clear_transient();
+        print!("{}", self.markdown.finish());
         if self.printed_text {
-            println!();
+            // The renderer ends its last line; this is the breathing room
+            // before the statusline or the next group.
             println!();
             self.printed_text = false;
         }
+        let _ = std::io::stdout().flush();
     }
 
     fn on_group_start(&mut self, summary: &str) {
         self.clear_transient();
+        self.finish_markdown();
         self.finish_tool_line();
         println!("{}● {summary}{}", self.theme.dim, self.theme.reset());
     }
@@ -136,6 +160,7 @@ impl Sink for ShellSink<'_> {
 
     fn on_notice(&mut self, text: &str) {
         self.clear_transient();
+        self.finish_markdown();
         self.finish_tool_line();
         println!(
             "{}odei:{} {}{text}{}",
@@ -148,6 +173,7 @@ impl Sink for ShellSink<'_> {
 
     fn request_approval(&mut self, tool: &str, label: &str, detail: &str) -> Approval {
         self.clear_transient();
+        self.finish_markdown();
         self.finish_tool_line();
         if !self.interactive {
             return Approval::Deny;
