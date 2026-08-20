@@ -12,6 +12,11 @@ use crossterm::event::{Event, KeyCode, KeyModifiers};
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Left margin for anything nested under a header line (a tool tree line,
+/// an approval detail/button/decision line). Header lines (●, odei:,
+/// streamed text) sit at column 0; nested detail sits one step in.
+const INDENT: &str = "  ";
+
 pub static CANCEL: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_sigint(_sig: libc::c_int) {
@@ -97,7 +102,7 @@ impl Sink for ShellSink<'_> {
             return;
         }
         let connector = if last_in_group { "└" } else { "├" };
-        print!("{}{connector} {label}{}", self.theme.dim, self.theme.reset());
+        print!("{}{INDENT}{connector} {label}{}", self.theme.dim, self.theme.reset());
         let _ = std::io::stdout().flush();
         self.tool_line_open = true;
     }
@@ -110,7 +115,12 @@ impl Sink for ShellSink<'_> {
             print!("\r\x1b[2K");
             self.tool_line_open = false;
         }
-        println!("{style}{connector} {label}{marker}{}", self.theme.reset());
+        println!("{style}{INDENT}{connector} {label}{marker}{}", self.theme.reset());
+        if last_in_group {
+            // Breathing room before whatever comes next: closing text,
+            // the next tool group, or the statusline.
+            println!();
+        }
     }
 
     fn on_notice(&mut self, text: &str) {
@@ -131,6 +141,7 @@ impl Sink for ShellSink<'_> {
         if !self.interactive {
             return Approval::Deny;
         }
+        println!();
         println!(
             "{}● Approval required{} {}({tool}){}",
             self.theme.subtitle,
@@ -138,13 +149,16 @@ impl Sink for ShellSink<'_> {
             self.theme.dim,
             self.theme.reset()
         );
-        println!("{}{label}{}", self.theme.hint, self.theme.reset());
+        println!("{INDENT}{}{label}{}", self.theme.hint, self.theme.reset());
         let preview: String = detail.lines().take(12).collect::<Vec<_>>().join("\n");
         if !preview.trim().is_empty() && preview.trim() != "{}" {
-            println!("{}{preview}{}", self.theme.dim, self.theme.reset());
+            for line in preview.lines() {
+                println!("{INDENT}{}{line}{}", self.theme.dim, self.theme.reset());
+            }
         }
+        println!();
         println!(
-            "{} y {} allow  {} a {} always allow  {} n {} deny",
+            "{INDENT}{} y {}  allow    {} a {}  always allow    {} n {}  deny",
             self.theme.approval_button_active,
             self.theme.reset(),
             self.theme.approval_button_inactive,
@@ -158,7 +172,8 @@ impl Sink for ShellSink<'_> {
             Approval::AlwaysAllow => "always allowed (rule saved)",
             Approval::Deny => "denied",
         };
-        println!("{}└ {text}{}", self.theme.dim, self.theme.reset());
+        println!("{INDENT}{}└ {text}{}", self.theme.dim, self.theme.reset());
+        println!();
         decision
     }
 }
