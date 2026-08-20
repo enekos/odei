@@ -11,6 +11,7 @@ mod inspect;
 mod markdown;
 mod permissions;
 mod provider;
+mod serve;
 mod session;
 mod theme;
 mod tools;
@@ -55,6 +56,12 @@ fn main() {
                 2
             }
         },
+        Some("serve") => {
+            let flag = |name: &str| {
+                args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+            };
+            serve::serve(config, flag("--workspace"), flag("--resume"))
+        }
         Some("setup") => match cli::setup_flow() {
             Ok(()) => 0,
             Err(e) => {

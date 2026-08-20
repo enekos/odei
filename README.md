@@ -240,19 +240,60 @@ Profile data lives in `~/.odei`: `config.json`, `permissions.json`, `sessions/*.
 `tool-results/`, `calls/`, `usage.jsonl`, `history`. Stored tool results and call
 journals are pruned after 7 days.
 
+## macOS app
+
+`ui/` is a SwiftUI front end. It does not reimplement the agent — it runs `odei serve` as
+a child process and speaks NDJSON to it, so the loop, the tools, the permission gate, the
+sessions and the call journal are the same code the terminal uses.
+
+```bash
+cargo install --path .        # the app looks in ~/.cargo/bin, ~/.local/bin, homebrew
+ui/build-app.sh               # writes ui/Odei.app — no Xcode needed, just Swift
+open ui/Odei.app
+```
+
+`⌘O` picks the workspace, `⌘N` starts a session, `⌘↩` sends, `⌘.` interrupts. Permission
+prompts appear above the composer with `y` / `a` / `n` bound to Allow / Always / Deny.
+Every finished tool line carries its `#N`; clicking it opens the same full report that
+`/call N` shows in the terminal, in an inspector pane. The sidebar lists this session's
+calls and every saved session — picking one resumes it. `ODEI_BIN` overrides binary
+discovery.
+
+### serve
+
+```
+odei serve [--workspace <dir>] [--resume last|<id>]
+```
+
+One JSON object per line, both directions, nothing else on stdout.
+In: `prompt`, `approve`, `cancel`, `compact`, `sessions`, `calls`, `call`, `model`,
+`mode`, `exit`. Out: `ready`, `state`, `history`, `waiting`, `text`, `text_end`, `group`,
+`tool`, `approval`, `notice`, `turn_end`, `sessions`, `calls`, `call`, `error`, `fatal`.
+
+`cancel` and `approve` are handled on the stdin reader thread because they have to land
+while the agent thread is blocked; everything else is queued for the loop.
+
 ## Develop
 
 ```bash
 cargo build --release
 cargo test
 cargo clippy
+
+python3 ui/checks/serve-protocol.py target/debug/odei   # serve, against a mock endpoint
+swift run --package-path ui OdeiChecks                  # the app's model layer
 ```
 
 Module map: `provider.rs` (Kimi SSE client) · `agent.rs` (tool loop) · `tools/` (registry +
-implementations, incl. `outline.rs`) · `ui.rs` (interactive shell) · `markdown.rs` (streaming
-markdown renderer) · `permissions.rs` · `session.rs` · `compact.rs` (history summarization) ·
-`calls.rs` (call journal + reports) · `inspect.rs` (picker + side pane) · `context.rs` (system
-prompt + runtime context) · `theme.rs`.
+implementations, incl. `outline.rs`) · `ui.rs` (interactive shell) · `serve.rs` (NDJSON
+front-end protocol) · `permissions.rs` · `session.rs` · `compact.rs` (history
+summarization) · `calls.rs` (call journal + reports) · `inspect.rs` (picker + side pane) ·
+`context.rs` (system prompt + runtime context) · `theme.rs`.
+
+The Swift side splits into `OdeiCore` (protocol, process, transcript) and `OdeiUI`
+(views), so the model layer can be checked without a window — XCTest ships with Xcode,
+which this app deliberately does not require, so `OdeiChecks` is a plain executable that
+exits non-zero on failure.
 
 ## Not implemented
 
