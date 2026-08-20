@@ -152,7 +152,7 @@ const PLAIN: Theme = Theme {
 /// The splash mist, thin → solid. The whole point of the grayscale rule is
 /// that a ramp like this can carry depth on its own, so the cloud is eight
 /// steps of gray and no hue at all.
-const MIST_DARK: [&str; 7] = [
+pub const MIST_DARK: [&str; 7] = [
     "",
     "\x1b[38;5;238m",
     "\x1b[38;5;241m",

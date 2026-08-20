@@ -13,7 +13,7 @@
 
 use crate::activity::{self, Call};
 use crate::agent::{Agent, Approval, Sink, StepDone, ToolDone, ToolStart};
-use crate::cloud::Cloud;
+use crate::blinker::Blinker;
 use crate::config::{Config, Detail, PermissionMode, KNOWN_MODELS};
 use crate::markdown;
 use crate::provider::ContentBlock;
@@ -59,8 +59,8 @@ pub struct ShellSink<'t> {
     markdown: markdown::Renderer<'t>,
     /// How much of each tool call to draw.
     detail: Detail,
-    /// The drifting mist under the "Thinking…" line, while the model works.
-    cloud: Option<Cloud>,
+    /// The subtle blinker under the "Thinking…" line, while the model works.
+    blinker: Option<Blinker>,
     waiting_line: bool,
     tool_line_open: bool,
     printed_text: bool,
@@ -77,7 +77,7 @@ impl<'t> ShellSink<'t> {
             theme,
             markdown: markdown::Renderer::new(theme),
             detail,
-            cloud: None,
+            blinker: None,
             waiting_line: false,
             tool_line_open: false,
             printed_text: false,
@@ -88,12 +88,12 @@ impl<'t> ShellSink<'t> {
 
     fn clear_transient(&mut self) {
         if self.waiting_line {
-            // The cloud sits below the waiting line; it must stop before
+            // The blinker sits below the waiting line; it must stop before
             // the line it hangs from is erased.
-            if let Some(cloud) = &mut self.cloud {
-                cloud.clear();
+            if let Some(blinker) = &mut self.blinker {
+                blinker.clear();
             }
-            self.cloud = None;
+            self.blinker = None;
             print!("\r\x1b[2K");
             self.waiting_line = false;
         }
@@ -264,7 +264,7 @@ impl Sink for ShellSink<'_> {
         let _ = std::io::stdout().flush();
         self.waiting_line = true;
         println!();
-        self.cloud = Cloud::maybe_start(self.theme, true);
+        self.blinker = Blinker::maybe_start(self.theme, true);
     }
 
     fn on_thinking(&mut self, text: &str) {
@@ -582,7 +582,7 @@ const HELP: &[(&str, &str)] = &[
     ("/compact", "summarize older turns to free up context"),
     ("/copy", "put my last reply on the clipboard"),
     ("/setup", "store a Kimi API key"),
-    ("/splash", "watch the cloud condense again"),
+    ("/splash", "watch the wordmark condense again"),
     ("/version", "print the version"),
     ("/quit", "leave"),
 ];
