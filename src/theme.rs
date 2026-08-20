@@ -1,0 +1,149 @@
+//! Visual language: monochrome grayscale, with color reserved for diff
+//! markers. Dark theme is the default; light theme swaps to the darker
+//! gray ramp.
+
+use std::io::IsTerminal;
+
+pub const RESET: &str = "\x1b[0m";
+#[allow(dead_code)]
+pub const BOLD: &str = "\x1b[1m";
+
+pub const INPUT_PREFIX: &str = "❯ ";
+pub const ASK_ACTIVITY_LABEL: &str = "⏺ Thinking";
+
+// Some styles (divider, diff markers, tag) are defined for completeness
+// and used as rendering grows.
+#[allow(dead_code)]
+pub struct Theme {
+    pub enabled: bool,
+    pub is_light: bool,
+    pub divider: &'static str,
+    pub hint: &'static str,
+    pub statusline: &'static str,
+    pub tag: &'static str,
+    pub subtitle: &'static str,
+    pub system_notice_label: &'static str,
+    pub system_notice_text: &'static str,
+    pub dim: &'static str,
+    pub warning: &'static str,
+    pub approval_button_active: &'static str,
+    pub approval_button_inactive: &'static str,
+    pub selected_completion: &'static str,
+    pub permission_auto: &'static str,
+    // The line number and +/- sign carry the only color in an otherwise
+    // monochrome diff: green for additions (#30A46C), red for deletions
+    // (#E5484D). The line text stays neutral.
+    pub diff_added_marker: &'static str,
+    pub diff_removed_marker: &'static str,
+}
+
+const DARK: Theme = Theme {
+    enabled: true,
+    is_light: false,
+    divider: "\x1b[38;5;240m",
+    hint: "\x1b[38;5;255m",
+    statusline: "\x1b[38;5;245m",
+    tag: "\x1b[1;38;5;255m",
+    subtitle: "\x1b[1;38;5;255m",
+    system_notice_label: "\x1b[1;38;5;252m",
+    system_notice_text: "\x1b[38;5;250m",
+    dim: "\x1b[38;5;245m",
+    warning: "\x1b[38;5;252m",
+    approval_button_active: "\x1b[48;5;255m\x1b[38;5;235m\x1b[1m",
+    approval_button_inactive: "\x1b[48;5;239m\x1b[38;5;255m",
+    selected_completion: "\x1b[1;38;5;255m",
+    permission_auto: "\x1b[38;5;252m",
+    diff_added_marker: "\x1b[38;2;48;164;108m",
+    diff_removed_marker: "\x1b[38;2;229;72;77m",
+};
+
+const LIGHT: Theme = Theme {
+    enabled: true,
+    is_light: true,
+    divider: "\x1b[38;5;250m",
+    hint: "\x1b[38;5;235m",
+    statusline: "\x1b[38;5;241m",
+    tag: "\x1b[1;38;5;235m",
+    subtitle: "\x1b[1;38;5;235m",
+    system_notice_label: "\x1b[1;38;5;238m",
+    system_notice_text: "\x1b[38;5;241m",
+    dim: "\x1b[38;5;247m",
+    warning: "\x1b[38;5;238m",
+    approval_button_active: "\x1b[48;5;236m\x1b[38;5;255m\x1b[1m",
+    approval_button_inactive: "\x1b[48;5;251m\x1b[38;5;237m",
+    selected_completion: "\x1b[1;38;5;235m",
+    permission_auto: "\x1b[38;5;238m",
+    diff_added_marker: "\x1b[38;2;48;164;108m",
+    diff_removed_marker: "\x1b[38;2;229;72;77m",
+};
+
+const PLAIN: Theme = Theme {
+    enabled: false,
+    is_light: false,
+    divider: "",
+    hint: "",
+    statusline: "",
+    tag: "",
+    subtitle: "",
+    system_notice_label: "",
+    system_notice_text: "",
+    dim: "",
+    warning: "",
+    approval_button_active: "",
+    approval_button_inactive: "",
+    selected_completion: "",
+    permission_auto: "",
+    diff_added_marker: "",
+    diff_removed_marker: "",
+};
+
+impl Theme {
+    pub fn detect() -> &'static Theme {
+        if std::env::var_os("NO_COLOR").is_some() || !std::io::stdout().is_terminal() {
+            return &PLAIN;
+        }
+        match std::env::var("ODEI_THEME").as_deref() {
+            Ok("light") => &LIGHT,
+            Ok("dark") => &DARK,
+            _ => {
+                // COLORFGBG "15;0"-style hint: last field is the background.
+                if let Ok(v) = std::env::var("COLORFGBG") {
+                    if let Some(bg) = v.rsplit(';').next() {
+                        if matches!(bg, "7" | "15") {
+                            return &LIGHT;
+                        }
+                    }
+                }
+                &DARK
+            }
+        }
+    }
+
+    pub fn reset(&self) -> &'static str {
+        if self.enabled {
+            RESET
+        } else {
+            ""
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn bold(&self) -> &'static str {
+        if self.enabled {
+            BOLD
+        } else {
+            ""
+        }
+    }
+}
+
+pub fn welcome_message(theme: &Theme, version: &str) -> String {
+    format!(
+        "{}𝒐dei{}{} v{} · Run /help for commands{}\n",
+        theme.subtitle,
+        theme.reset(),
+        theme.dim,
+        version,
+        theme.reset()
+    )
+}
