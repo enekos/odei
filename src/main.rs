@@ -4,8 +4,8 @@
 mod activity;
 mod agent;
 mod calls;
+mod blinker;
 mod cli;
-mod cloud;
 mod compact;
 mod config;
 mod context;
