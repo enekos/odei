@@ -1,0 +1,117 @@
+name: release
+
+# Tag a version to publish it:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Linux builds are static musl, so one artifact runs on any distro including
+# Alpine. macOS ships both architectures rather than a universal binary, so
+# install.sh downloads only what the machine needs.
+
+on:
+  push:
+    tags: ["v*"]
+  # Runs the build without publishing, for checking the matrix still works.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    strategy:
+      # One broken target must not deny the others a release.
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-14
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-22.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # ring needs a C compiler, and musl-gcc is what links it statically.
+      - name: musl toolchain
+        if: contains(matrix.target, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          case "$version" in v*) ;; *) version="dev-${GITHUB_SHA::7}" ;; esac
+          name="odei-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          cp "target/${{ matrix.target }}/release/odei" "dist/${name}/odei"
+          cp README.md "dist/${name}/"
+          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+          cd dist
+          if command -v sha256sum >/dev/null; then
+            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          else
+            shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          fi
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      # Signed provenance, so a downloaded tarball can be traced back to this
+      # workflow and commit: gh attestation verify --repo enekos/odei <file>
+      - name: attest
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/${{ steps.package.outputs.name }}.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # One SHA256SUMS covers every platform, which is what install.sh reads
+      # when it cannot find a per-file checksum.
+      - name: collect
+        run: |
+          set -euo pipefail
+          cd artifacts
+          cat *.tar.gz.sha256 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          ls -l
+
+      - name: publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "odei ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            artifacts/*.tar.gz artifacts/*.tar.gz.sha256 artifacts/SHA256SUMS

@@ -11,8 +11,50 @@ Its output style aims to be closer to a Unix shell than a heavy "IDE in the term
 ## Install
 
 ```bash
-cargo install --path .
+curl -fsSL https://raw.githubusercontent.com/enekos/odei/master/install.sh | sh
 ```
+
+Puts a single binary in `~/.local/bin` — macOS on Apple silicon or Intel, Linux on x86-64 or
+arm64. No sudo, no runtime dependencies, nothing written outside that directory and `~/.odei`.
+
+Piping a script into a shell is worth being careful about, so here is exactly what it does: works
+out which release asset fits your machine, downloads it over HTTPS, checks it against the SHA-256
+published in the same release, and refuses to install anything that does not match. What it
+downloads is a tarball, never more shell code. To read it first — the better habit — do that:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/enekos/odei/master/install.sh -o install.sh
+less install.sh
+sh install.sh
+```
+
+Options work as flags or environment variables: `--version v0.1.0`, `--dir /usr/local/bin`,
+`--force`. Through a pipe they need a separator — `| sh -s -- --dir ~/bin`.
+
+Release artifacts also carry signed build provenance, so you can confirm a tarball came from this
+repository's release workflow rather than from someone else:
+
+```bash
+gh attestation verify --repo enekos/odei odei-v0.1.0-aarch64-apple-darwin.tar.gz
+```
+
+Prefer to build it yourself:
+
+```bash
+cargo install --git https://github.com/enekos/odei --locked odei   # any platform, from source
+cargo install --path .                                             # from a clone
+```
+
+## Update
+
+```bash
+odei upgrade           # check for a newer release and install it
+odei upgrade --check   # only say whether one exists
+```
+
+`upgrade` runs the installer published with the release it is installing, so installing and
+updating share one code path; re-running the `curl` line does the same thing. Either way it stops
+early when you are already current.
 
 ## Setup
 

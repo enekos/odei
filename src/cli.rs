@@ -95,6 +95,77 @@ pub fn doctor(config: &Config) -> i32 {
     }
 }
 
+/// Where the published installer lives, pinned to a tag so the script that
+/// installs a release is the one that shipped with it.
+fn installer_url(tag: &str) -> String {
+    format!("https://raw.githubusercontent.com/enekos/odei/{tag}/install.sh")
+}
+
+/// The newest published release tag, or None if GitHub can't be reached.
+fn latest_release() -> Result<String, String> {
+    let body = ureq::get("https://api.github.com/repos/enekos/odei/releases/latest")
+        .set("accept", "application/vnd.github+json")
+        .set("user-agent", concat!("odei/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(20))
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_string()
+        .map_err(|e| e.to_string())?;
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    value["tag_name"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "the release feed carried no tag_name".to_string())
+}
+
+/// `odei upgrade` — check for a newer release and run the published installer.
+///
+/// The installer is what does the work, so there is one code path for
+/// installing and updating, and `upgrade` needs no download, unpack or
+/// checksum logic of its own.
+pub fn upgrade(check_only: bool) -> i32 {
+    let current = env!("CARGO_PKG_VERSION");
+    let latest = match latest_release() {
+        Ok(tag) => tag,
+        Err(e) => {
+            eprintln!("odei: could not check for updates: {e}");
+            return 1;
+        }
+    };
+    let latest_version = latest.trim_start_matches('v');
+    if latest_version == current {
+        println!("odei {current} is the latest release.");
+        return 0;
+    }
+    println!("odei {current} is installed; {latest_version} is available.");
+    if check_only {
+        println!("Run `odei upgrade` to install it.");
+        return 0;
+    }
+    let command = format!("curl -fsSL --proto '=https' --tlsv1.2 {} | sh", installer_url(&latest));
+    if which("curl").is_none() || which("sh").is_none() {
+        println!("Needs curl and sh. Install it by hand:\n  {command}");
+        return 1;
+    }
+    println!("Running the installer published with {latest}:\n  {command}\n");
+    match std::process::Command::new("sh").arg("-c").arg(&command).status() {
+        Ok(status) if status.success() => 0,
+        Ok(status) => {
+            eprintln!("odei: the installer exited with {status}");
+            1
+        }
+        Err(e) => {
+            eprintln!("odei: could not run the installer: {e}");
+            1
+        }
+    }
+}
+
+fn which(program: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|dir| dir.join(program)).find(|candidate| candidate.is_file())
+}
+
 pub fn models() -> i32 {
     for (id, note) in KNOWN_MODELS {
         println!("{id:<28} {note}");
@@ -129,6 +200,7 @@ pub fn help() -> i32 {
     println!("                             headless NDJSON agent on stdio (drives the macOS app)");
     println!("  odei eval [name…] [--list] run the behavioural evals in ./evals/cases");
     println!("  odei setup                 store a Kimi Code API key");
+    println!("  odei upgrade [--check]     update to the latest release");
     println!("  odei status                show runtime configuration");
     println!("  odei doctor                check configuration and connectivity");
     println!("  odei models                list known models");

@@ -71,6 +71,7 @@ fn main() {
                 1
             }
         },
+        Some("upgrade") => cli::upgrade(args.iter().any(|a| a == "--check")),
         Some("status") => cli::status(&config),
         Some("doctor") => cli::doctor(&config),
         Some("models") => cli::models(),
