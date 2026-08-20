@@ -78,9 +78,26 @@ Switch at runtime with `/model k3`, or persistently via `ODEI_MODEL`.
 
 ## Tools
 
-`read_file`, `write_file`, `edit_file`, `list_files`, `glob_files`, `grep_files`, `delete_file`,
-`rename_file`, `copy_file`, `create_folder`, `file_info`, `semantic_search`, `terminal`,
-`read_tool_result`, `web_fetch`, `web_search`.
+`read_file`, `code_outline`, `write_file`, `edit_file`, `list_files`, `glob_files`,
+`grep_files`, `delete_file`, `rename_file`, `copy_file`, `create_folder`, `file_info`,
+`semantic_search`, `terminal`, `read_tool_result`, `web_fetch`, `web_search`.
+
+### Structure without reading
+
+A built-in structural scanner (no tree-sitter, no grammars, nothing to install) recovers the
+declaration skeleton of Rust, TypeScript/JavaScript, Python, Go, and C-family sources: every
+function, method, type, class, and constant, with its signature, nesting, and line span. It
+strips comments and strings while tracking brace depth (indentation for Python), so a string
+containing `fn fake() {` fools neither the depth nor the outline.
+
+It surfaces in three places, all automatic:
+
+- **`code_outline`** maps a file — or a whole directory, one skeleton per file — so the model
+  picks a `start_line` instead of reading top to bottom. A 600-line file costs ~35 lines.
+- **Truncated `read_file` output** ends with a map of the declarations in the part that didn't
+  fit, so the next read jumps rather than pages.
+- **`grep_files` hits** carry the declaration they sit in (`[in pub fn read_file]`), so a match
+  is locatable without another read.
 
 ### The terminal is a real terminal
 

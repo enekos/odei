@@ -2,6 +2,7 @@
 //! the model sees, with execution implemented natively in Rust.
 
 pub mod fs;
+pub mod outline;
 pub mod results;
 pub mod terminal;
 pub mod web;
@@ -184,7 +185,7 @@ macro_rules! search_root_desc {
     };
 }
 
-static REGISTRY: [ToolSpec; 16] = [
+static REGISTRY: [ToolSpec; 17] = [
     ToolSpec {
         name: "list_files",
         description: "Show what a single directory contains: entry names, with sizes for files and a trailing slash for subdirectories. It does not recurse and does not open anything. Use it to see what is actually in a folder before choosing a path to read. To find files by name across a tree use glob_files; to search inside files use grep_files.",
@@ -249,7 +250,7 @@ static REGISTRY: [ToolSpec; 16] = [
     },
     ToolSpec {
         name: "read_file",
-        description: "Return the text of one file with line numbers, optionally just the window starting at start_line. Output is capped, and when it truncates the tail tells you the line to resume from. Use it on a path you already know, especially before editing it. It handles a single UTF-8 text file — not directories, not binaries, and not many files at once.",
+        description: "Return the text of one file with line numbers, optionally just the window starting at start_line. Output is capped, and when it truncates the tail tells you the line to resume from, plus a map of the declarations you haven't seen yet. Use it on a path you already know, especially before editing it. For a big source file, code_outline first tells you which start_line is worth reading. It handles a single UTF-8 text file — not directories, not binaries, and not many files at once.",
         input_schema: || json!({
             "type": "object",
             "properties": {
@@ -266,6 +267,23 @@ static REGISTRY: [ToolSpec; 16] = [
         label_arg: "path",
         label_default: "file",
         call: fs::read_file,
+    },
+    ToolSpec {
+        name: "code_outline",
+        description: "Map source code without paying to read it: every declaration — functions, methods, types, classes, constants — with its signature and the line it starts on. Point it at a file for the full skeleton including what is nested in classes and impls, or at a directory for a per-file map of a whole module. Feed a line number to read_file's start_line to land directly on the body you want, instead of paging through the file. It understands Rust, TypeScript/JavaScript, Python, Go, and C-family sources; other files need read_file. It returns structure only, never bodies, and the line spans are a scanner's best effort rather than a compiler's.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File or directory to outline. Relative paths resolve against the workspace root; absolute, ~/, and ../ paths work too but may need approval. Defaults to the workspace root."}
+            }
+        }),
+        activity_kind: ActivityKind::Read,
+        requires_approval: false,
+        action_label: "Outlining",
+        completed_action_label: "Outlined",
+        label_arg: "path",
+        label_default: ".",
+        call: outline::code_outline,
     },
     ToolSpec {
         name: "write_file",

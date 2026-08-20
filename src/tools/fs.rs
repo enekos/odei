@@ -16,13 +16,13 @@ const GREP_FILE_BYTE_CAP: u64 = 4 * 1024 * 1024;
 const GLOB_MATCH_CAP: usize = 400;
 const CONTEXT_LINES_CAP: usize = 10;
 
-fn display_rel(ctx: &ToolContext, path: &Path) -> String {
+pub(crate) fn display_rel(ctx: &ToolContext, path: &Path) -> String {
     path.strip_prefix(&ctx.workspace_root)
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| path.display().to_string())
 }
 
-fn skip_dir(name: &str) -> bool {
+pub(crate) fn skip_dir(name: &str) -> bool {
     matches!(
         name,
         ".git" | "node_modules" | "target" | "zig-out" | "zig-cache" | ".zig-cache" | "dist" | ".next" | ".venv" | "__pycache__" | ".DS_Store"
@@ -75,6 +75,19 @@ pub fn read_file(ctx: &ToolContext, input: &Value) -> ToolOutcome {
             "[showing lines {start_line}-{last} of {total_lines}; continue with start_line={}]",
             last + 1
         );
+        // A structural map of what was cut off, so the next read can jump
+        // straight to the right start_line instead of paging.
+        if let Some(lang) = super::outline::Lang::of(&resolved) {
+            let items = super::outline::outline(lang, &text);
+            let rest: Vec<_> = items.into_iter().filter(|i| i.line > last).collect();
+            if !rest.is_empty() {
+                let _ = write!(
+                    out,
+                    "\n[declarations in the unread part — jump with start_line:\n{}]",
+                    super::outline::render(&rest, 40, 3072).trim_end()
+                );
+            }
+        }
     } else if start_line > 1 || last < total_lines {
         let _ = write!(out, "[lines {start_line}-{last} of {total_lines}]");
     }
@@ -284,6 +297,9 @@ pub fn grep_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
         let lines: Vec<&str> = text.lines().collect();
         let mut file_matched = false;
+        // Computed on the first hit in a supported source file; annotates
+        // each match with the declaration it sits in.
+        let mut file_outline: Option<Vec<super::outline::Item>> = None;
         for (i, line) in lines.iter().enumerate() {
             let hay = if case_insensitive { line.to_lowercase() } else { line.to_string() };
             if hay.contains(&needle) {
@@ -306,7 +322,27 @@ pub fn grep_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
                             }
                             rows.push("--".into());
                         } else {
-                            rows.push(format!("{}:{}:{}", rel.display(), i + 1, line));
+                            if file_outline.is_none() {
+                                file_outline = Some(
+                                    super::outline::Lang::of(entry.path())
+                                        .map(|l| super::outline::outline(l, &text))
+                                        .unwrap_or_default(),
+                                );
+                            }
+                            let mut row = format!("{}:{}:{}", rel.display(), i + 1, line);
+                            if let Some(enc) = file_outline
+                                .as_deref()
+                                .and_then(|items| super::outline::enclosing(items, i + 1))
+                            {
+                                if enc.line != i + 1 {
+                                    let _ = write!(
+                                        row,
+                                        "  [in {}]",
+                                        super::outline::short_name(&enc.text)
+                                    );
+                                }
+                            }
+                            rows.push(row);
                         }
                     } else if mode == "matches" && context_lines == 0 {
                         // keep counting totals; rows already full
@@ -580,6 +616,37 @@ mod tests {
         assert!(out.text.contains("a.rs:2:"));
         let count = grep_files(&ctx(&dir), &json!({"pattern": "TODO", "mode": "count"}));
         assert!(count.text.starts_with("1 matching lines"));
+    }
+
+    #[test]
+    fn read_file_truncation_maps_the_remainder() {
+        let dir = tempdir("readmap");
+        let mut src = String::new();
+        for i in 0..2050 {
+            src.push_str(&format!("// filler line {i}\n"));
+        }
+        src.push_str("pub fn late_function(x: u32) -> u32 {\n    x\n}\n");
+        std::fs::write(dir.join("big.rs"), &src).unwrap();
+        let out = read_file(&ctx(&dir), &json!({"path": "big.rs"}));
+        assert!(!out.is_error);
+        assert!(out.text.contains("continue with start_line=2001"), "{}", out.text);
+        assert!(out.text.contains("declarations in the unread part"), "{}", out.text);
+        assert!(out.text.contains("pub fn late_function(x: u32) -> u32"), "{}", out.text);
+        assert!(out.text.contains("2051"), "map carries the jump line: {}", out.text);
+    }
+
+    #[test]
+    fn grep_annotates_enclosing_declaration() {
+        let dir = tempdir("grepenc");
+        std::fs::write(
+            dir.join("a.rs"),
+            "pub fn outer() {\n    let marker = 1;\n}\nconst MARKER_TOP: u32 = 2;\n",
+        )
+        .unwrap();
+        let out = grep_files(&ctx(&dir), &json!({"pattern": "marker"}));
+        assert!(!out.is_error);
+        assert!(out.text.contains("a.rs:2:"), "{}", out.text);
+        assert!(out.text.contains("[in pub fn outer]"), "{}", out.text);
     }
 
     #[test]
