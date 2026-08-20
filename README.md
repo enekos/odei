@@ -179,6 +179,10 @@ the query has to be a path, and everything else works the same, because it is gi
 New worktrees land in `zz`'s layout, a sibling `<repo>-worktrees/<branch-slug>`, honouring
 `ZZ_WORKTREE_DIR` and `ZZ_WORKTREE_BASE`.
 
+```bash
+cargo install zz-cli   # the crate is zz-cli, the binary is zz
+```
+
 `clean` is the one action that deletes, so it is deliberately timid. A branch counts as landed
 when it is an ancestor of the base branch, or when `gh` reports a merged pull request for it —
 which is how squash merges, invisible to git, are caught. It never touches the main checkout,
