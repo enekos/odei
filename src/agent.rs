@@ -294,13 +294,7 @@ impl Agent {
             match sink.request_approval(spec.name, &running_label, &detail) {
                 Approval::Allow => {}
                 Approval::AlwaysAllow => {
-                    let target = input[spec.label_arg].as_str().unwrap_or("");
-                    // Terminal rules remember the first command token.
-                    let target = if spec.name == "terminal" {
-                        target.split_whitespace().next().unwrap_or("").to_string()
-                    } else {
-                        target.to_string()
-                    };
+                    let target = permissions::remember_target(spec, input);
                     permissions::remember_allow(&mut self.rules, spec.name, &target);
                 }
                 Approval::Deny => {

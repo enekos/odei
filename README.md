@@ -122,7 +122,7 @@ Switch at runtime with `/model k3`, or persistently via `ODEI_MODEL`.
 
 `read_file`, `code_outline`, `write_file`, `edit_file`, `list_files`, `glob_files`,
 `grep_files`, `delete_file`, `rename_file`, `copy_file`, `create_folder`, `file_info`,
-`semantic_search`, `terminal`, `read_tool_result`, `web_fetch`, `web_search`.
+`semantic_search`, `terminal`, `worktree`, `read_tool_result`, `web_fetch`, `web_search`.
 
 ### Structure without reading
 
@@ -154,6 +154,38 @@ which is how a dev server, a REPL, or anything that wants typing gets driven. Si
 whole process group, so a shell's children go down with it. Captured commands run with
 `PAGER=cat` and `GIT_TERMINAL_PROMPT=0` — a command that stops for a pager would otherwise just
 burn its timeout.
+
+### Worktrees, by name rather than by path
+
+The `worktree` tool lets the agent work in your other checkouts without being told where they
+are. A query is a fuzzy directory name and `query@branch` names a worktree inside it, with the
+branch matched exact name first, then unique prefix, then unique substring — `odei@swift` finds
+`odei-worktrees/swift-ui`. An ambiguous fragment lists the candidates instead of guessing.
+
+```
+resolve   the directory, and nothing else — feed it to read_file or terminal's cwd
+list      every worktree of the resolved repository, with its branch
+create    make a missing worktree, cutting the branch from the default branch
+track     the same for a branch that only exists on the remote, fetching it first
+run       one command in the resolved directory, exactly like terminal's exec
+merged    which worktrees have landed, and why the rest haven't
+clean     retire the landed ones: remove, delete the branch, prune
+```
+
+Resolution goes through [`zz`](https://github.com/enekos/zz) when it is installed, which ranks
+the directories you actually visit and, failing that, scans the linked worktrees of every
+repository it knows — so a branch fragment finds a checkout nobody has opened yet. Without `zz`
+the query has to be a path, and everything else works the same, because it is git underneath.
+New worktrees land in `zz`'s layout, a sibling `<repo>-worktrees/<branch-slug>`, honouring
+`ZZ_WORKTREE_DIR` and `ZZ_WORKTREE_BASE`.
+
+`clean` is the one action that deletes, so it is deliberately timid. A branch counts as landed
+when it is an ancestor of the base branch, or when `gh` reports a merged pull request for it —
+which is how squash merges, invisible to git, are caught. It never touches the main checkout,
+the directory the session is working in, a worktree with uncommitted changes, or a branch with
+commits that haven't landed. `merged` is the same pass without the removals: run it first.
+`force` overrides the uncommitted-changes guard and nothing else — unmerged work is never
+removable.
 
 ## Markdown, rendered as it streams
 
@@ -276,6 +308,8 @@ when two of them disagree the one scoped nearest the files being touched wins.
 | `ODEI_MAX_AGENT_STEPS` | agent loop step cap (default 120) |
 | `ODEI_THEME` | `light` / `dark` (auto-detected otherwise) |
 | `ODEI_MARKDOWN` | `off` to print the model's markdown source verbatim |
+| `ZZ_WORKTREE_DIR` | where the `worktree` tool creates worktrees (default: a sibling `<repo>-worktrees`) |
+| `ZZ_WORKTREE_BASE` | base ref for branches it cuts (default: `main`, then `master`) |
 | `NO_COLOR` | disable styling |
 
 Profile data lives in `~/.odei`: `config.json`, `permissions.json`, `sessions/*.jsonl`,
@@ -327,7 +361,7 @@ swift run --package-path ui OdeiChecks                  # the app's model layer
 ```
 
 Module map: `provider.rs` (Kimi SSE client) · `agent.rs` (tool loop) · `tools/` (registry +
-implementations, incl. `outline.rs`) · `ui.rs` (interactive shell) · `serve.rs` (NDJSON
+implementations, incl. `outline.rs` and `worktree.rs`) · `ui.rs` (interactive shell) · `serve.rs` (NDJSON
 front-end protocol) · `permissions.rs` · `session.rs` · `compact.rs` (history
 summarization) · `calls.rs` (call journal + reports) · `inspect.rs` (picker + side pane) ·
 `context.rs` (system prompt + runtime context) · `theme.rs`.

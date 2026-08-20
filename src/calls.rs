@@ -261,6 +261,30 @@ pub fn repro(record: &Record) -> Repro {
             quote(&arg(input, "source")),
             quote(&arg(input, "destination"))
         )),
+        "worktree" => {
+            let action = arg(input, "action");
+            let branch = arg(input, "branch");
+            let root = if input["root"].as_bool().unwrap_or(false) { " -r" } else { "" };
+            let query = arg(input, "query");
+            let mut target = if query.is_empty() { ".".to_string() } else { query };
+            // For merged and clean the branch narrows the sweep; it does not
+            // pick the directory, so it has no place in the zz target.
+            if !branch.is_empty() && !target.contains('@') && action != "merged" && action != "clean"
+            {
+                let _ = write!(target, "@{branch}");
+            }
+            let target = quote(&target);
+            approx(match action.as_str() {
+                "list" => format!("zz -W{root} {target}"),
+                "create" => format!("zz -c -p{root} {target}"),
+                "track" => format!("zz -t -p{root} {target}"),
+                "run" => format!("zz{root} {target} {}", arg(input, "command")),
+                "merged" | "clean" => {
+                    format!("zz -W{root} {target}  # then git worktree remove per merged branch")
+                }
+                _ => format!("zz -p{root} {target}"),
+            })
+        }
         "web_fetch" => approx(format!("curl -sL {}", quote(&arg(input, "url")))),
         "web_search" => approx(format!(
             "curl -s {}",
@@ -370,6 +394,20 @@ mod tests {
         assert_eq!(quote("two words"), "'two words'");
         assert_eq!(quote("it's"), "'it'\\''s'");
         assert_eq!(quote("a; rm -rf /"), "'a; rm -rf /'");
+    }
+
+    #[test]
+    fn worktree_repro_speaks_zz() {
+        let line = |input| repro(&record("worktree", input)).lines.join("\n");
+        assert_eq!(line(json!({"action": "resolve", "query": "data@fix"})), "zz -p data@fix");
+        assert_eq!(line(json!({"action": "resolve", "query": "data", "branch": "fix"})), "zz -p data@fix");
+        assert_eq!(line(json!({"action": "resolve", "query": "data", "root": true})), "zz -p -r data");
+        assert_eq!(line(json!({"action": "list", "query": "data"})), "zz -W data");
+        assert_eq!(line(json!({"action": "create", "query": "data@new"})), "zz -c -p data@new");
+        assert_eq!(line(json!({"action": "track", "query": "data@new"})), "zz -t -p data@new");
+        assert_eq!(line(json!({"action": "run", "query": "data", "command": "cargo test"})), "zz data cargo test");
+        // A branch here is a filter over the sweep, not part of the target.
+        assert!(line(json!({"action": "clean", "query": "data", "branch": "fix"})).starts_with("zz -W data "));
     }
 
     #[test]

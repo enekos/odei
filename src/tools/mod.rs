@@ -6,6 +6,7 @@ pub mod outline;
 pub mod results;
 pub mod terminal;
 pub mod web;
+pub mod worktree;
 
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -185,7 +186,7 @@ macro_rules! search_root_desc {
     };
 }
 
-static REGISTRY: [ToolSpec; 17] = [
+static REGISTRY: [ToolSpec; 18] = [
     ToolSpec {
         name: "list_files",
         description: "Show what a single directory contains: entry names, with sizes for files and a trailing slash for subdirectories. It does not recurse and does not open anything. Use it to see what is actually in a folder before choosing a path to read. To find files by name across a tree use glob_files; to search inside files use grep_files.",
@@ -461,6 +462,31 @@ static REGISTRY: [ToolSpec; 17] = [
         label_arg: "command",
         label_default: "terminal",
         call: terminal::terminal,
+    },
+    ToolSpec {
+        name: "worktree",
+        description: "Work across the user's other checkouts and git worktrees without knowing where they live. A query is a fuzzy directory name, not a path — it goes through zz (github.com/enekos/zz), which ranks the directories the user actually visits and, failing that, scans the linked worktrees of every repository it knows, so a branch fragment finds a checkout nobody has opened yet. Say which worktree with query@branch, or the branch field; the branch itself may be partial, resolved exact name first, then unique prefix, then unique substring, and an ambiguous fragment lists the candidates rather than guessing. Pick one action. resolve returns the directory and touches nothing — pass what it gives you as a path to read_file or as terminal's cwd. list shows every worktree of the resolved repository with its branch. create makes a missing worktree, cutting a new branch from the default branch or checking out one that already exists; track does the same for a branch that only exists on the remote, fetching it first. run executes one command in the resolved directory and behaves exactly like terminal's exec, taking the same command, profile, and timeout_ms. merged reports which worktrees have landed — an ancestor of the base branch, or a merged pull request when gh can say so — and clean then retires them, removing the worktree, deleting the branch, and pruning. Cleanup never touches the main checkout, the directory this session is working in, or a worktree with uncommitted changes unless force is set. Use it for the repository you are not in; for the workspace itself, plain git through terminal is simpler.",
+        input_schema: || json!({
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["resolve", "list", "create", "track", "run", "merged", "clean"], "description": "Which operation to perform. All of them take a query; run also needs a command, and create and track need a branch."},
+                "query": {"type": "string", "description": "Fuzzy name of the directory or repository, e.g. data, odei, meta. Optionally query@branch to name a worktree in one string. Defaults to the workspace root."},
+                "branch": {"type": "string", "description": "Which worktree to act on, as an alternative to query@branch. May be partial. For create and track this is the branch to make a worktree for; for merged and clean it narrows the work to that one branch."},
+                "root": {"type": "boolean", "description": "Resolve to the .git root of the matched directory rather than the directory itself. Defaults to false."},
+                "command": {"type": "string", "description": "Shell command to run in the resolved directory. Required for run."},
+                "profile": {"type": "string", "enum": ["clean", "user"], "description": "For run: user (the default) goes through the login shell so startup files apply; clean skips them."},
+                "timeout_ms": {"type": "integer", "description": "For run: how long the command may take before it is killed. Defaults to 120000."},
+                "force": {"type": "boolean", "description": "For clean: retire a merged worktree even though it has uncommitted changes, discarding them. Defaults to false."}
+            },
+            "required": ["action"]
+        }),
+        activity_kind: ActivityKind::Command,
+        requires_approval: true,
+        action_label: "Navigating",
+        completed_action_label: "Navigated",
+        label_arg: "query",
+        label_default: "worktrees",
+        call: worktree::worktree,
     },
     ToolSpec {
         name: "read_tool_result",
