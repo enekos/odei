@@ -45,13 +45,33 @@ impl Message {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Usage {
+    /// Prompt tokens the model actually had to read. With caching on, this
+    /// excludes anything served from cache.
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Prompt tokens written into the cache by this request.
+    pub cache_write_tokens: u64,
+    /// Prompt tokens served from cache instead of being read again.
+    pub cache_read_tokens: u64,
+}
+
+impl Usage {
+    /// Everything the model saw as prompt, cached or not — the real context
+    /// size. `input_tokens` alone undercounts once caching is on, and the
+    /// compaction trigger reads this.
+    pub fn context_tokens(&self) -> u64 {
+        self.input_tokens + self.cache_write_tokens + self.cache_read_tokens
+    }
 }
 
 #[derive(Debug)]
 pub struct TurnResult {
     pub content: Vec<ContentBlock>,
+    /// Reasoning text, kept out of `content` because it is not echoed back to
+    /// the API. Every Kimi response opens with a thinking block, and a turn
+    /// that produces nothing else leaves this as the only thing the model
+    /// actually said.
+    pub thinking: String,
     pub stop_reason: String,
     pub usage: Usage,
 }
@@ -92,6 +112,67 @@ fn retryable_status(status: u16) -> bool {
     matches!(status, 408 | 409 | 429 | 500 | 502 | 503 | 504 | 529)
 }
 
+/// Set when the endpoint rejects `cache_control`, so the rest of the process
+/// stops sending it. Kimi speaks the Anthropic protocol but is a different
+/// implementation; a strict validator must degrade to plain requests rather
+/// than fail every turn.
+static CACHE_REJECTED: AtomicBool = AtomicBool::new(false);
+
+pub fn cache_rejected() -> bool {
+    CACHE_REJECTED.load(Ordering::Relaxed)
+}
+
+fn mark(value: &mut Value) {
+    value["cache_control"] = json!({"type": "ephemeral"});
+}
+
+/// The request, with cache breakpoints if they're wanted.
+///
+/// The prompt prefix is hashed in request order — tools, then system, then
+/// messages — so a breakpoint on the *last* tool covers every schema (~5k
+/// tokens that never change), and one on the system block covers the prompt.
+/// Both are re-sent on every step of every turn, which is what makes them
+/// worth caching at all.
+///
+/// The transcript needs two breakpoints, not one: the newest message so this
+/// turn's context is cached for the next step, and the one before it so this
+/// step reads back what the last step wrote. Four in total, which is the
+/// documented ceiling.
+fn build_body(
+    config: &Config,
+    system: &str,
+    messages: &[Message],
+    tools: &[Value],
+    cache: bool,
+) -> Value {
+    let mut body = json!({
+        "model": config.model,
+        "max_tokens": config.max_tokens(),
+        "stream": true,
+        "system": system,
+        "messages": messages,
+        "tools": tools,
+    });
+    if !cache {
+        return body;
+    }
+    body["system"] = json!([{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]);
+    if let Some(last) = body["tools"].as_array_mut().and_then(|tools| tools.last_mut()) {
+        mark(last);
+    }
+    if let Some(messages) = body["messages"].as_array_mut() {
+        let count = messages.len();
+        for index in [count.checked_sub(3), count.checked_sub(1)].into_iter().flatten() {
+            if let Some(block) =
+                messages[index]["content"].as_array_mut().and_then(|blocks| blocks.last_mut())
+            {
+                mark(block);
+            }
+        }
+    }
+    body
+}
+
 /// One streamed model turn. `on_event` receives deltas for live rendering;
 /// the accumulated assistant content is returned when the stream ends.
 pub fn stream_turn(
@@ -105,21 +186,14 @@ pub fn stream_turn(
     let key = config.api_key.as_deref().ok_or(ProviderError::MissingKey)?;
     let url = format!("{}/v1/messages", config.base_url);
 
-    let body = json!({
-        "model": config.model,
-        "max_tokens": 32768,
-        "stream": true,
-        "system": system,
-        "messages": messages,
-        "tools": tools,
-    });
-
     let mut attempt = 0usize;
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(ProviderError::Cancelled);
         }
         attempt += 1;
+        let cache = config.prompt_cache && !cache_rejected();
+        let body = build_body(config, system, messages, tools, cache);
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(15))
             .timeout_read(Duration::from_secs(600))
@@ -137,6 +211,14 @@ pub fn stream_turn(
             Ok(resp) => return read_stream(resp.into_reader(), cancel, on_event),
             Err(ureq::Error::Status(status, resp)) => {
                 let text = resp.into_string().unwrap_or_default();
+                // A rejected breakpoint is our fault, not the caller's: drop
+                // caching for the rest of the process and send the same turn
+                // again plainly. Costs one wasted request, once.
+                if status == 400 && cache && text.contains("cache") {
+                    CACHE_REJECTED.store(true, Ordering::Relaxed);
+                    attempt -= 1;
+                    continue;
+                }
                 if retryable_status(status) && attempt < 4 {
                     std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
                     continue;
@@ -162,6 +244,7 @@ fn read_stream(
 ) -> Result<TurnResult, ProviderError> {
     let mut lines = BufReader::new(reader);
     let mut content: Vec<ContentBlock> = Vec::new();
+    let mut thinking = String::new();
     let mut partial_json: Vec<String> = Vec::new();
     let mut stop_reason = String::from("end_turn");
     let mut usage = Usage::default();
@@ -188,8 +271,15 @@ fn read_stream(
             data.clear();
             match event["type"].as_str().unwrap_or("") {
                 "message_start" => {
-                    if let Some(t) = event["message"]["usage"]["input_tokens"].as_u64() {
+                    let reported = &event["message"]["usage"];
+                    if let Some(t) = reported["input_tokens"].as_u64() {
                         usage.input_tokens = t;
+                    }
+                    if let Some(t) = reported["cache_creation_input_tokens"].as_u64() {
+                        usage.cache_write_tokens = t;
+                    }
+                    if let Some(t) = reported["cache_read_input_tokens"].as_u64() {
+                        usage.cache_read_tokens = t;
                     }
                 }
                 "content_block_start" => {
@@ -209,7 +299,10 @@ fn read_stream(
                             });
                             partial_json.push(String::new());
                         }
-                        // thinking blocks stream but are not echoed back
+                        // A thinking block still occupies an index, so it
+                        // gets a placeholder to keep later deltas aligned;
+                        // the text goes to `thinking` and the placeholder is
+                        // dropped below.
                         _ => {
                             content.push(ContentBlock::Text { text: String::new() });
                             partial_json.push(String::new());
@@ -234,9 +327,9 @@ fn read_stream(
                             }
                         }
                         "thinking_delta" => {
-                            on_event(StreamEvent::ThinkingDelta(
-                                delta["thinking"].as_str().unwrap_or(""),
-                            ));
+                            let piece = delta["thinking"].as_str().unwrap_or("");
+                            thinking.push_str(piece);
+                            on_event(StreamEvent::ThinkingDelta(piece));
                         }
                         _ => {}
                     }
@@ -272,7 +365,7 @@ fn read_stream(
 
     // Drop empty text blocks the protocol sometimes emits around tool use.
     content.retain(|block| !matches!(block, ContentBlock::Text { text } if text.is_empty()));
-    Ok(TurnResult { content, stop_reason, usage })
+    Ok(TurnResult { content, thinking, stop_reason, usage })
 }
 
 /// One turn with no tools and no streaming surface, for internal work like
@@ -318,5 +411,193 @@ pub fn check_connectivity(config: &Config) -> Result<(), ProviderError> {
             Err(ProviderError::Http(status, text.chars().take(300).collect()))
         }
         Err(ureq::Error::Transport(t)) => Err(ProviderError::Transport(t.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PermissionMode;
+
+    fn config() -> Config {
+        Config {
+            api_key: Some("test".into()),
+            key_source: "test",
+            model: "kimi-for-coding".into(),
+            base_url: "http://localhost".into(),
+            permission_mode: PermissionMode::Auto,
+            max_agent_steps: 10,
+            workspace_root: std::path::PathBuf::from("/tmp"),
+            prompt_cache: true,
+            system_prompt_file: None,
+        }
+    }
+
+    fn transcript(turns: usize) -> Vec<Message> {
+        (0..turns)
+            .map(|i| Message {
+                role: if i % 2 == 0 { "user".into() } else { "assistant".into() },
+                content: vec![ContentBlock::Text { text: format!("message {i}") }],
+            })
+            .collect()
+    }
+
+    fn breakpoints(body: &Value) -> usize {
+        fn walk(value: &Value) -> usize {
+            match value {
+                Value::Object(map) => {
+                    map.contains_key("cache_control") as usize
+                        + map.values().map(walk).sum::<usize>()
+                }
+                Value::Array(items) => items.iter().map(walk).sum(),
+                _ => 0,
+            }
+        }
+        walk(body)
+    }
+
+    #[test]
+    fn uncached_body_is_untouched() {
+        let body = build_body(&config(), "be helpful", &transcript(4), &[json!({"name": "a"})], false);
+        assert_eq!(body["system"], "be helpful");
+        assert_eq!(body["max_tokens"], 32768);
+        assert_eq!(breakpoints(&body), 0);
+    }
+
+    #[test]
+    fn cached_body_marks_tools_system_and_the_transcript_tail() {
+        let tools = vec![json!({"name": "a"}), json!({"name": "b"})];
+        let body = build_body(&config(), "be helpful", &transcript(6), &tools, true);
+        // System becomes a block array so it can carry a breakpoint.
+        assert_eq!(body["system"][0]["text"], "be helpful");
+        assert!(body["system"][0]["cache_control"].is_object());
+        // Only the last tool: the breakpoint covers the whole schema prefix.
+        assert!(body["tools"][0]["cache_control"].is_null());
+        assert!(body["tools"][1]["cache_control"].is_object());
+        // Newest message, so the next step reads back this turn's context,
+        // and the one before it, so this step reads back the last step's.
+        assert!(body["messages"][5]["content"][0]["cache_control"].is_object());
+        assert!(body["messages"][3]["content"][0]["cache_control"].is_object());
+        assert!(body["messages"][4]["content"][0]["cache_control"].is_null());
+        // Four is the documented ceiling; going over is a hard API error.
+        assert_eq!(breakpoints(&body), 4);
+    }
+
+    #[test]
+    fn a_short_transcript_marks_what_exists() {
+        let body = build_body(&config(), "be helpful", &transcript(1), &[json!({"name": "a"})], true);
+        assert_eq!(breakpoints(&body), 3);
+        assert!(body["messages"][0]["content"][0]["cache_control"].is_object());
+    }
+
+    #[test]
+    fn context_tokens_counts_cached_prompt() {
+        let usage = Usage {
+            input_tokens: 300,
+            output_tokens: 50,
+            cache_write_tokens: 1_200,
+            cache_read_tokens: 40_000,
+        };
+        // The window holds 41,500 prompt tokens even though the model only
+        // had to read 300 of them.
+        assert_eq!(usage.context_tokens(), 41_500);
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    /// Build an SSE body the way the endpoint sends one: `data:` lines
+    /// separated by blank lines.
+    fn sse(events: &[Value]) -> String {
+        events.iter().map(|e| format!("data: {e}\n\n")).collect()
+    }
+
+    fn read(body: &str) -> TurnResult {
+        let cancel = AtomicBool::new(false);
+        read_stream(body.as_bytes(), &cancel, &mut |_| {}).expect("stream parses")
+    }
+
+    fn thinking_block(index: u64, text: &str) -> Vec<Value> {
+        vec![
+            json!({"type":"content_block_start","index":index,"content_block":{"type":"thinking"}}),
+            json!({"type":"content_block_delta","index":index,"delta":{"type":"thinking_delta","thinking":text}}),
+            json!({"type":"content_block_delta","index":index,"delta":{"type":"signature_delta","signature":"sig"}}),
+            json!({"type":"content_block_stop","index":index}),
+        ]
+    }
+
+    #[test]
+    fn thinking_is_captured_and_kept_out_of_the_content() {
+        let mut events = vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        events.extend(thinking_block(0, "the file is small, I will read it"));
+        events.extend([
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"text"}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"It greets."}}),
+            json!({"type":"content_block_stop","index":1}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}),
+            json!({"type":"message_stop"}),
+        ]);
+        let turn = read(&sse(&events));
+        // The thinking block held index 0, so the text must not have been
+        // appended into it — one block out, and it is the answer.
+        assert_eq!(turn.content.len(), 1);
+        assert!(matches!(&turn.content[0], ContentBlock::Text { text } if text == "It greets."));
+        assert_eq!(turn.thinking, "the file is small, I will read it");
+    }
+
+    #[test]
+    fn a_tool_call_survives_an_end_turn_stop_reason() {
+        // Kimi pairs tool_use blocks with stop_reason "end_turn". The loop
+        // used to take that as "the turn is over" and drop the call.
+        let mut events = vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        events.extend(thinking_block(0, "I should look at the file"));
+        events.extend([
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file"}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"app.py\"}"}}),
+            json!({"type":"content_block_stop","index":1}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}),
+            json!({"type":"message_stop"}),
+        ]);
+        let turn = read(&sse(&events));
+        assert_eq!(turn.stop_reason, "end_turn");
+        match &turn.content[0] {
+            ContentBlock::ToolUse { name, input, .. } => {
+                assert_eq!(name, "read_file");
+                assert_eq!(input["path"], "app.py");
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_thinking_only_turn_returns_no_content_but_keeps_the_thought() {
+        let mut events = vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        events.extend(thinking_block(0, "I have already answered this"));
+        events.extend([
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}),
+            json!({"type":"message_stop"}),
+        ]);
+        let turn = read(&sse(&events));
+        assert!(turn.content.is_empty(), "the placeholder must not survive");
+        assert_eq!(turn.thinking, "I have already answered this");
+    }
+
+    #[test]
+    fn cache_counters_come_off_message_start() {
+        let events = [
+            json!({"type":"message_start","message":{"usage":{
+                "input_tokens": 39, "cache_read_input_tokens": 4416,
+                "cache_creation_input_tokens": 0}}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}),
+            json!({"type":"message_stop"}),
+        ];
+        let turn = read(&sse(&events));
+        assert_eq!(turn.usage.cache_read_tokens, 4416);
+        assert_eq!(turn.usage.input_tokens, 39);
+        // 39 read fresh, 4416 from cache: the window is holding 4455.
+        assert_eq!(turn.usage.context_tokens(), 4455);
     }
 }

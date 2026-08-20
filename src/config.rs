@@ -50,6 +50,8 @@ pub struct StoredConfig {
     pub base_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permissions: Option<PermissionMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +63,13 @@ pub struct Config {
     pub permission_mode: PermissionMode,
     pub max_agent_steps: usize,
     pub workspace_root: PathBuf,
+    /// Mark cache breakpoints on the tools, the system prompt and the tail of
+    /// the transcript. On by default; the provider turns it off for the
+    /// process if the endpoint rejects it.
+    pub prompt_cache: bool,
+    /// Override for the system prompt, for A/B-ing prompt changes under
+    /// `odei eval` (ODEI_SYSTEM_PROMPT_FILE).
+    pub system_prompt_file: Option<PathBuf>,
 }
 
 pub fn odei_home() -> PathBuf {
@@ -134,6 +143,15 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(120);
 
+        let prompt_cache = std::env::var("ODEI_PROMPT_CACHE")
+            .ok()
+            .map(|v| !matches!(v.trim(), "0" | "off" | "false" | "no"))
+            .or(stored.prompt_cache)
+            .unwrap_or(true);
+
+        let system_prompt_file =
+            std::env::var_os("ODEI_SYSTEM_PROMPT_FILE").map(PathBuf::from).filter(|p| p.exists());
+
         Config {
             api_key,
             key_source,
@@ -142,6 +160,17 @@ impl Config {
             permission_mode,
             max_agent_steps,
             workspace_root: workspace_root.to_path_buf(),
+            prompt_cache,
+            system_prompt_file,
+        }
+    }
+
+    /// Output ceiling for one turn. Kept well under the window so a long
+    /// transcript plus a long answer still fits.
+    pub fn max_tokens(&self) -> u64 {
+        match self.model.as_str() {
+            "k3" | "k3-256k" => 65_536,
+            _ => 32_768,
         }
     }
 

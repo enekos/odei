@@ -7,6 +7,7 @@ mod cli;
 mod compact;
 mod config;
 mod context;
+mod eval;
 mod inspect;
 mod markdown;
 mod permissions;
@@ -62,6 +63,7 @@ fn main() {
             };
             serve::serve(config, flag("--workspace"), flag("--resume"))
         }
+        Some("eval") => eval::run(config, &args[1..]),
         Some("setup") => match cli::setup_flow() {
             Ok(()) => 0,
             Err(e) => {

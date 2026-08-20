@@ -1,0 +1,12 @@
+{
+  "about": "answers from the code, not from what a queue usually does",
+  "tools_used_any": [
+    "read_file",
+    "grep_files",
+    "code_outline",
+    "semantic_search"
+  ],
+  "max_tool_calls": 8,
+  "text_matches": "QueueDrained",
+  "max_chars_before_tools": 300
+}

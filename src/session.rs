@@ -147,6 +147,8 @@ pub fn record_usage(model: &str, usage: Usage) {
         "model": model,
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
+        "cache_write_tokens": usage.cache_write_tokens,
+        "cache_read_tokens": usage.cache_read_tokens,
     });
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{line}");

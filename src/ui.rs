@@ -323,6 +323,26 @@ fn print_help(theme: &Theme) {
     }
 }
 
+/// Cache accounting for /stats: how much of the prompt came back from cache
+/// rather than being read again, and why it might be zero.
+fn cache_line(agent: &Agent) -> String {
+    let usage = agent.total_usage;
+    let served = usage.cache_read_tokens;
+    let prompt = usage.input_tokens + usage.cache_write_tokens + served;
+    let state = if !agent.config.prompt_cache {
+        " (off)"
+    } else if crate::provider::cache_rejected() {
+        " (endpoint rejected cache_control; disabled)"
+    } else {
+        ""
+    };
+    let share = if prompt > 0 { served as f64 / prompt as f64 * 100.0 } else { 0.0 };
+    format!(
+        "prompt cache{state} · {served} read · {} written · {share:.0}% of prompt served from cache",
+        usage.cache_write_tokens
+    )
+}
+
 fn last_assistant_text(agent: &Agent) -> Option<String> {
     agent.session.messages.iter().rev().find_map(|message| {
         if message.role != "assistant" {
@@ -376,7 +396,6 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
             theme.reset()
         );
     }
-    println!();
 
     let mut editor = match rustyline::DefaultEditor::new() {
         Ok(editor) => editor,
@@ -389,6 +408,11 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
     let _ = editor.load_history(&history_path);
 
     loop {
+        // The input block owns vertical room on both sides — a blank line
+        // above the statusline and one below the typed line — so the user's
+        // turn reads as its own block instead of running into the output
+        // above and below it.
+        println!();
         println!("{}", statusline(theme, &agent));
         let line = match editor.readline(theme::INPUT_PREFIX) {
             Ok(line) => line,
@@ -408,6 +432,7 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
         }
         let _ = editor.add_history_entry(input);
         let _ = editor.save_history(&history_path);
+        println!();
 
         if let Some(rest) = input.strip_prefix('/') {
             let mut parts = rest.splitn(2, ' ');
@@ -559,6 +584,7 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                         "turns {} · input tokens {} · output tokens {}",
                         agent.turns, agent.total_usage.input_tokens, agent.total_usage.output_tokens
                     );
+                    println!("{}", cache_line(&agent));
                     println!(
                         "context {} of {} tokens ({:.0}%)",
                         agent.last_input_tokens,
@@ -568,7 +594,7 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                 }
                 "usage" | "cost" => {
                     let path = crate::config::odei_home().join("usage.jsonl");
-                    let mut by_model: std::collections::BTreeMap<String, (u64, u64, u64)> =
+                    let mut by_model: std::collections::BTreeMap<String, [u64; 4]> =
                         Default::default();
                     if let Ok(text) = std::fs::read_to_string(&path) {
                         for line in text.lines() {
@@ -576,17 +602,18 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                                 let entry = by_model
                                     .entry(v["model"].as_str().unwrap_or("?").to_string())
                                     .or_default();
-                                entry.0 += 1;
-                                entry.1 += v["input_tokens"].as_u64().unwrap_or(0);
-                                entry.2 += v["output_tokens"].as_u64().unwrap_or(0);
+                                entry[0] += 1;
+                                entry[1] += v["input_tokens"].as_u64().unwrap_or(0);
+                                entry[2] += v["output_tokens"].as_u64().unwrap_or(0);
+                                entry[3] += v["cache_read_tokens"].as_u64().unwrap_or(0);
                             }
                         }
                     }
                     if by_model.is_empty() {
                         println!("{}no recorded usage{}", theme.dim, theme.reset());
                     }
-                    for (model, (requests, input, output)) in by_model {
-                        println!("{model}: {requests} requests · {input} in · {output} out (subscription plan, no per-token spend)");
+                    for (model, [requests, input, output, cached]) in by_model {
+                        println!("{model}: {requests} requests · {input} in · {output} out · {cached} from cache (subscription plan, no per-token spend)");
                     }
                 }
                 "calls" => crate::inspect::picker(theme, &agent.session.meta.id),

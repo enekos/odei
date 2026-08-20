@@ -134,7 +134,7 @@ impl Agent {
         self.session.append(Message::user_text(&contextualized));
         self.turns += 1;
 
-        let system = context::system_prompt();
+        let system = context::system_prompt(&self.config);
         let gateway_tools = tools::gateway_tools();
 
         for _step in 0..self.config.max_agent_steps {
@@ -177,8 +177,13 @@ impl Agent {
 
             self.total_usage.input_tokens += turn.usage.input_tokens;
             self.total_usage.output_tokens += turn.usage.output_tokens;
-            if turn.usage.input_tokens > 0 {
-                self.last_input_tokens = turn.usage.input_tokens;
+            self.total_usage.cache_write_tokens += turn.usage.cache_write_tokens;
+            self.total_usage.cache_read_tokens += turn.usage.cache_read_tokens;
+            // Cached prompt tokens still occupy the window, so the live
+            // context size counts them; `input_tokens` alone would read as
+            // near-empty on a cache hit and never trip compaction.
+            if turn.usage.context_tokens() > 0 {
+                self.last_input_tokens = turn.usage.context_tokens();
             }
             crate::session::record_usage(&self.config.model, turn.usage);
 
@@ -193,11 +198,39 @@ impl Agent {
                 })
                 .collect();
 
-            self.session.append(Message { role: "assistant".into(), content: turn.content.clone() });
+            if !turn.content.is_empty() {
+                self.session
+                    .append(Message { role: "assistant".into(), content: turn.content.clone() });
+            }
 
-            if tool_calls.is_empty() || turn.stop_reason != "tool_use" {
+            if tool_calls.is_empty() {
+                // Every Kimi response opens with a thinking block, and a turn
+                // can end with nothing but that: no text, no tool call. The
+                // transcript must not carry an empty assistant message (the
+                // API rejects one on the next request, including after a
+                // resume), and the user must not be left staring at a blank
+                // line, so the reasoning becomes the answer.
+                if turn.content.is_empty() {
+                    let thought = turn.thinking.trim();
+                    if thought.is_empty() {
+                        sink.on_notice("the model ended the turn without saying anything");
+                    } else {
+                        sink.on_text_delta(thought);
+                        sink.on_text_done();
+                        self.session.append(Message {
+                            role: "assistant".into(),
+                            content: vec![ContentBlock::Text { text: thought.into() }],
+                        });
+                    }
+                } else if turn.stop_reason == "max_tokens" {
+                    sink.on_notice("the answer was cut off at the output limit");
+                }
                 return Ok(());
             }
+            // `stop_reason` is not the signal for whether to run tools — Kimi
+            // returns tool_use blocks alongside an end_turn stop reason, and
+            // gating on it silently dropped the call and ended the turn with
+            // the tool_use unanswered.
 
             let kinds: Vec<tools::ActivityKind> = tool_calls
                 .iter()

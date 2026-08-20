@@ -1,0 +1,9 @@
+{
+  "about": "pages back into an offloaded result instead of re-running the command",
+  "tools_used": [
+    "read_tool_result"
+  ],
+  "command_matches": "noise\\.sh",
+  "text_matches": "7f3a91",
+  "max_tool_calls": 8
+}

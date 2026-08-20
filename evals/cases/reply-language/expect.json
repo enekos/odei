@@ -1,0 +1,6 @@
+{
+  "about": "answers in the language the user wrote in",
+  "judge": "The agent's answer is written in Spanish.",
+  "max_tool_calls": 6,
+  "max_chars_before_tools": 300
+}

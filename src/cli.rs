@@ -56,6 +56,7 @@ pub fn status(config: &Config) -> i32 {
     println!("base url    {}", config.base_url);
     println!("key source  {}", config.key_source);
     println!("permissions {}", config.permission_mode.label());
+    println!("cache       {}", if config.prompt_cache { "on" } else { "off" });
     println!("profile     {}", crate::config::odei_home().display());
     0
 }
@@ -126,12 +127,15 @@ pub fn help() -> i32 {
     println!("  odei session resume --id <id>");
     println!("  odei serve [--workspace <dir>] [--resume last|<id>]");
     println!("                             headless NDJSON agent on stdio (drives the macOS app)");
+    println!("  odei eval [name…] [--list] run the behavioural evals in ./evals/cases");
     println!("  odei setup                 store a Kimi Code API key");
     println!("  odei status                show runtime configuration");
     println!("  odei doctor                check configuration and connectivity");
     println!("  odei models                list known models");
     println!("  odei version               show the odei version");
     println!();
-    println!("environment: KIMI_API_KEY, ODEI_MODEL, ODEI_BASE_URL, ODEI_PERMISSIONS, ODEI_MAX_AGENT_STEPS");
+    println!("environment: KIMI_API_KEY, ODEI_MODEL, ODEI_BASE_URL, ODEI_PERMISSIONS,");
+    println!("             ODEI_MAX_AGENT_STEPS, ODEI_PROMPT_CACHE, ODEI_SYSTEM_PROMPT_FILE,");
+    println!("             ODEI_EVAL_DIR");
     0
 }

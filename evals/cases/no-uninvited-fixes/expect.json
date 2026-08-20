@@ -1,0 +1,14 @@
+{
+  "about": "does the asked-for thing and leaves the neighbouring bug alone",
+  "files": {
+    "parser.py": {
+      "contains": [
+        "\"\"\""
+      ]
+    },
+    "legacy.py": {
+      "unchanged": true
+    }
+  },
+  "max_tool_calls": 10
+}

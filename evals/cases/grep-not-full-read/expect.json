@@ -1,0 +1,9 @@
+{
+  "about": "searches a large file instead of reading it whole",
+  "tools_used_any": [
+    "grep_files",
+    "code_outline"
+  ],
+  "max_tool_calls": 8,
+  "text_matches": "(?i)schedule_window"
+}

@@ -20,7 +20,7 @@ const OUTPUT_CAP: usize = 256 * 1024;
 const HEREDOC_CAP: usize = 8 * 1024;
 const PRUNE_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Record {
     /// 1-based index within the session; what `#N` refers to.
     pub n: usize,

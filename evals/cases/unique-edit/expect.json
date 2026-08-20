@@ -1,0 +1,12 @@
+{
+  "about": "recovers from an ambiguous edit target by adding context",
+  "files": {
+    "conf.ini": {
+      "contains": [
+        "[worker]\ntimeout = 30",
+        "[client]\ntimeout = 5"
+      ]
+    }
+  },
+  "max_tool_calls": 10
+}

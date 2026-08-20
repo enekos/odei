@@ -77,7 +77,16 @@ const STYLE: &str = "\
   the content genuinely calls for markdown; no emoji.
 - Keep going until the task is done, you're actually blocked, or the user stops you.";
 
-pub fn system_prompt() -> String {
+/// The system prompt — or the contents of ODEI_SYSTEM_PROMPT_FILE when one is
+/// set, replacing it wholesale rather than adding to it, so `odei eval` can
+/// score a rewrite against the shipped text.
+pub fn system_prompt(config: &crate::config::Config) -> String {
+    if let Some(path) = &config.system_prompt_file {
+        match std::fs::read_to_string(path) {
+            Ok(text) if !text.trim().is_empty() => return text,
+            _ => {}
+        }
+    }
     format!("{ROLE}{EVIDENCE}{CHANGES}{MACHINE}{STYLE}")
 }
 
