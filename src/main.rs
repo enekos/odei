@@ -2,10 +2,12 @@
 //! Kimi Code subscription API (https://api.kimi.com/coding).
 
 mod agent;
+mod calls;
 mod cli;
 mod compact;
 mod config;
 mod context;
+mod inspect;
 mod permissions;
 mod provider;
 mod session;

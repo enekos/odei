@@ -107,7 +107,13 @@ impl Sink for ShellSink<'_> {
         self.tool_line_open = true;
     }
 
-    fn on_tool_done(&mut self, label: &str, is_error: bool, last_in_group: bool) {
+    fn on_tool_done(
+        &mut self,
+        label: &str,
+        is_error: bool,
+        last_in_group: bool,
+        call: Option<usize>,
+    ) {
         let connector = if last_in_group { "└" } else { "├" };
         let style = if is_error { self.theme.warning } else { self.theme.dim };
         let marker = if is_error { " ✗" } else { "" };
@@ -115,7 +121,12 @@ impl Sink for ShellSink<'_> {
             print!("\r\x1b[2K");
             self.tool_line_open = false;
         }
-        println!("{style}{INDENT}{connector} {label}{marker}{}", self.theme.reset());
+        // The handle is what /call takes, and what /calls lists.
+        let handle = match call {
+            Some(n) => format!("  {}#{n}{}", self.theme.hint, self.theme.reset()),
+            None => String::new(),
+        };
+        println!("{style}{INDENT}{connector} {label}{marker}{}{handle}", self.theme.reset());
         if last_in_group {
             // Breathing room before whatever comes next: closing text,
             // the next tool group, or the statusline.
@@ -264,6 +275,8 @@ const HELP: &[(&str, &str)] = &[
     ("/status", "where I am pointed and how I am configured"),
     ("/stats", "turns and tokens for this session"),
     ("/usage (/cost)", "token totals per model across all sessions"),
+    ("/calls", "pick a tool call and see exactly what it did"),
+    ("/call <n>", "open call #n — command, arguments, full output"),
     ("/compact", "summarize older turns to free up context"),
     ("/copy", "put my last reply on the clipboard"),
     ("/setup", "store a Kimi API key"),
@@ -548,6 +561,20 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                     }
                     for (model, (requests, input, output)) in by_model {
                         println!("{model}: {requests} requests · {input} in · {output} out (subscription plan, no per-token spend)");
+                    }
+                }
+                "calls" => crate::inspect::picker(theme, &agent.session.meta.id),
+                "call" => {
+                    // `#7` and `7` both address call seven.
+                    match arg.trim_start_matches('#').parse::<usize>() {
+                        Ok(n) if n > 0 => {
+                            crate::inspect::show(theme, &agent.session.meta.id, n);
+                        }
+                        _ => println!(
+                            "{}usage: /call <n> — or /calls to pick one{}",
+                            theme.dim,
+                            theme.reset()
+                        ),
                     }
                 }
                 "compact" => {

@@ -113,6 +113,58 @@ whole process group, so a shell's children go down with it. Captured commands ru
 `PAGER=cat` and `GIT_TERMINAL_PROMPT=0` — a command that stops for a pager would otherwise just
 burn its timeout.
 
+## Inspecting a tool call
+
+Every completed activity line carries a handle:
+
+```
+● 3 tool calls · 2 reads · 1 command
+  ├ Read src/agent.rs  #1
+  ├ Searched TODO  #2
+  └ Ran cargo test --lib ✗  #3
+```
+
+`/calls` lists the session's calls and lets you **click one**; `/call 3` goes
+straight there. Either way you get the whole account of that step — the
+command that reproduces it, the arguments, and the complete output, including
+the part the model never saw because it was truncated for the transcript:
+
+```
+odei call #3  ·  terminal  ·  failed  ·  2.41s  ·  2026-08-20 14:00:09
+Ran cargo test --lib
+cwd /Users/you/proj
+
+── Ran this ────────────────────────────────────────────────────────────
+cd /Users/you/proj
+PAGER=cat GIT_PAGER=cat GIT_TERMINAL_PROMPT=0 /bin/zsh -lc 'cargo test --lib'
+
+── Arguments ───────────────────────────────────────────────────────────
+{
+  "action": "exec",
+  "command": "cargo test --lib"
+}
+
+── Output · 8411 bytes · complete · the model saw an 8 KB preview of this
+running 214 tests
+...
+```
+
+For the `terminal` tool that block is the command that actually ran, env and
+shell flags included. For everything else it is an honest stand-in — the
+`grep -rn` or `sed -n` that would do the same thing — labelled as
+approximate, because odei did the work natively.
+
+It opens in a **real side pane** when the terminal can split itself: tmux,
+Zellij, WezTerm, and kitty are each detected from their own environment
+variable, so scrollback, search, and copy are the ones you already use. With
+no multiplexer it opens in your pager. The rendered report is a plain-text
+file under `~/.odei/calls/` and its path is always printed, so it pipes and
+pastes like anything else.
+
+Mouse reporting is armed only while the picker is on screen. The rest of the
+time — and in the pane itself — dragging selects text exactly as it always
+did.
+
 ## Context management
 
 Two mechanisms keep a long session inside the model's window.
@@ -148,7 +200,8 @@ when two of them disagree the one scoped nearest the files being touched wins.
 | `NO_COLOR` | disable styling |
 
 Profile data lives in `~/.odei`: `config.json`, `permissions.json`, `sessions/*.jsonl`,
-`tool-results/`, `usage.jsonl`, `history`. Stored tool results are pruned after 7 days.
+`tool-results/`, `calls/`, `usage.jsonl`, `history`. Stored tool results and call
+journals are pruned after 7 days.
 
 ## Develop
 
@@ -159,8 +212,9 @@ cargo clippy
 ```
 
 Module map: `provider.rs` (Kimi SSE client) · `agent.rs` (tool loop) · `tools/` (registry +
-implementations) · `ui.rs` (interactive shell) · `permissions.rs` · `session.rs` · `compact.rs`
-(history summarization) · `context.rs` (system prompt + runtime context) · `theme.rs`.
+implementations, incl. `outline.rs`) · `ui.rs` (interactive shell) · `permissions.rs` ·
+`session.rs` · `compact.rs` (history summarization) · `calls.rs` (call journal + reports) ·
+`inspect.rs` (picker + side pane) · `context.rs` (system prompt + runtime context) · `theme.rs`.
 
 ## Not implemented
 

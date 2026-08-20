@@ -2,6 +2,7 @@
 //! permission gate, feed results back, repeat until the model ends its turn
 //! or the step cap is reached (ODEI_MAX_AGENT_STEPS).
 
+use crate::calls;
 use crate::compact;
 use crate::config::Config;
 use crate::context;
@@ -26,7 +27,15 @@ pub trait Sink {
     fn on_text_done(&mut self);
     fn on_group_start(&mut self, summary: &str);
     fn on_tool_start(&mut self, label: &str, last_in_group: bool);
-    fn on_tool_done(&mut self, label: &str, is_error: bool, last_in_group: bool);
+    /// `call` is the journal's `#N` for what just ran, so the activity line
+    /// can name something `/call N` will reopen. `None` when nothing ran.
+    fn on_tool_done(
+        &mut self,
+        label: &str,
+        is_error: bool,
+        last_in_group: bool,
+        call: Option<usize>,
+    );
     fn on_notice(&mut self, text: &str);
     fn request_approval(&mut self, tool: &str, label: &str, detail: &str) -> Approval;
 }
@@ -36,6 +45,8 @@ pub struct Agent {
     pub tool_context: ToolContext,
     pub rules: RuleStore,
     pub session: Session,
+    /// Full record of every tool call, for `/calls`.
+    pub journal: calls::Journal,
     pub turns: u64,
     pub total_usage: Usage,
     /// Input tokens on the most recent request — the live context size, as
@@ -47,11 +58,13 @@ impl Agent {
     pub fn new(config: Config, session: Session) -> Agent {
         let tool_context = ToolContext::new(&config.workspace_root);
         let rules = permissions::load_rules();
+        let journal = calls::Journal::new(&session.meta.id);
         Agent {
             config,
             tool_context,
             rules,
             session,
+            journal,
             turns: 0,
             total_usage: Usage::default(),
             last_input_tokens: 0,
@@ -262,6 +275,7 @@ impl Agent {
                         &format!("Denied {running_label}"),
                         true,
                         last_in_group,
+                        None,
                     );
                     return tools::ToolOutcome::err(
                         "the user denied permission for this action; do not retry it without new user intent",
@@ -271,9 +285,21 @@ impl Agent {
         }
 
         sink.on_tool_start(&running_label, last_in_group);
+        let started = std::time::Instant::now();
         let outcome = (spec.call)(&self.tool_context, input);
+        let elapsed = started.elapsed();
+        // Journalled before the result is trimmed for the transcript, so the
+        // record keeps everything the tool actually returned.
+        let call = self.journal.record(
+            spec.name,
+            &tools::activity_label(spec, input, true),
+            input,
+            &self.tool_context.workspace_root,
+            elapsed,
+            &outcome,
+        );
         let done_label = tools::activity_label(spec, input, true);
-        sink.on_tool_done(&done_label, outcome.is_error, last_in_group);
+        sink.on_tool_done(&done_label, outcome.is_error, last_in_group, Some(call));
         outcome
     }
 }
