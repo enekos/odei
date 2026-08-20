@@ -4,6 +4,7 @@
 mod agent;
 mod calls;
 mod cli;
+mod cloud;
 mod compact;
 mod config;
 mod context;
@@ -14,6 +15,7 @@ mod permissions;
 mod provider;
 mod serve;
 mod session;
+mod splash;
 mod theme;
 mod tools;
 mod ui;
