@@ -161,7 +161,7 @@ pub fn upgrade(check_only: bool) -> i32 {
     }
 }
 
-pub fn which(program: &str) -> Option<std::path::PathBuf> {
+fn which(program: &str) -> Option<std::path::PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).map(|dir| dir.join(program)).find(|candidate| candidate.is_file())
 }

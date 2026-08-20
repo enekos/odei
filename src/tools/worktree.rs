@@ -1,15 +1,15 @@
 //! Worktree tool: find a checkout, open one, work in it, retire it once merged.
 //!
-//! Directory resolution goes through `zz` (github.com/enekos/zz) when it is on
-//! PATH — zoxide frecency plus its own worktree discovery, so a bare branch
-//! fragment lands on a checkout the agent has never visited. Where git can
-//! answer for itself it is asked directly, so every action still works on a
-//! machine without `zz`.
+//! A query is a name, not a path. Resolving one reads the directories zoxide
+//! already ranks by how often you visit them, and falls back to the linked
+//! worktrees of the repositories in that list — which is how a branch fragment
+//! finds a checkout nobody has opened yet. Everything below that is git and
+//! name matching, done here rather than shelled out to.
 
 use super::{terminal, ToolContext, ToolOutcome};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 pub fn worktree(ctx: &ToolContext, input: &Value) -> ToolOutcome {
     let action = input["action"].as_str().unwrap_or_default();
@@ -30,26 +30,36 @@ pub fn worktree(ctx: &ToolContext, input: &Value) -> ToolOutcome {
     }
 }
 
-// ── zz ──────────────────────────────────────────────────────────────────────
+// ── zoxide ──────────────────────────────────────────────────────────────────
 
-/// `zz` on PATH, or where its own installer puts it.
-fn zz_bin() -> Option<PathBuf> {
-    crate::cli::which("zz").or_else(|| {
-        let local = PathBuf::from(std::env::var_os("HOME")?).join(".local/bin/zz");
-        local.is_file().then_some(local)
-    })
+/// Every directory zoxide knows, most-visited first, paired with its name.
+/// An empty list — no zoxide, or nothing learned yet — is not an error; it
+/// just means a query has to be a path.
+fn zoxide_dirs() -> Vec<(String, PathBuf)> {
+    let Ok(out) = Command::new("zoxide").args(["query", "--list"]).output() else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| PathBuf::from(line.trim()))
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| (name_of(&path), path))
+        .collect()
 }
 
-fn zz(args: &[&str]) -> Result<String, String> {
-    let bin = zz_bin().ok_or("zz is not installed")?;
-    let out = Command::new(&bin).args(args).output().map_err(|e| format!("zz: {e}"))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if out.status.success() {
-        Ok(stdout)
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if stderr.is_empty() { format!("zz {}: no match", args.join(" ")) } else { stderr })
-    }
+/// Teach zoxide a directory we landed in, so worktrees climb the ranking the
+/// same way visited directories do. Best-effort and silent.
+fn zoxide_add(path: &Path) {
+    let _ = Command::new("zoxide")
+        .arg("add")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 // ── git ─────────────────────────────────────────────────────────────────────
@@ -146,8 +156,8 @@ fn split_query(input: &Value) -> (String, Option<String>) {
     }
 }
 
-/// Most-specific-first branch matching, mirroring zz: exact name, then unique
-/// prefix, then unique substring. Ambiguity is an error, never a guess.
+/// Most-specific-first matching: exact name, then unique prefix, then unique
+/// substring. Ambiguity is an error, never a guess.
 fn match_branch<'a>(trees: &'a [Worktree], fragment: &str) -> Result<&'a Worktree, String> {
     let named: Vec<&Worktree> = trees.iter().filter(|w| w.branch.is_some()).collect();
     if let Some(exact) = named.iter().find(|w| w.label() == fragment) {
@@ -170,10 +180,89 @@ fn match_branch<'a>(trees: &'a [Worktree], fragment: &str) -> Result<&'a Worktre
     Err(format!("no worktree matches {fragment}"))
 }
 
+fn name_of(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default()
+}
+
+/// The most specific match any candidate reaches. Candidates arrive in
+/// frecency order, so within a tier the one you visit most often wins — which
+/// is the whole reason to ask zoxide rather than walk the filesystem.
+fn best<'a>(candidates: &'a [(String, PathBuf)], fragment: &str) -> Option<&'a PathBuf> {
+    let fragment = fragment.to_lowercase();
+    let tiers: [fn(&str, &str) -> bool; 3] =
+        [|name, f| name == f, |name, f| name.starts_with(f), |name, f| name.contains(f)];
+    tiers
+        .iter()
+        .find_map(|reached| candidates.iter().find(|(name, _)| reached(name, &fragment)))
+        .map(|(_, path)| path)
+}
+
+/// The main checkout owning `dir`. A linked worktree's `.git` is a file
+/// pointing at `<repo>/.git/worktrees/<name>`, so the repository it belongs to
+/// is readable without spawning git. That pointer holds whatever git resolved
+/// at creation time, so the path can come back canonicalized (`/private/var`
+/// for `/var` on macOS) — fine for the lookups this feeds, which go through
+/// `git -C`.
+fn owning_repo(dir: &Path) -> Option<PathBuf> {
+    let root = dir.ancestors().find(|d| d.join(".git").exists())?;
+    let marker = root.join(".git");
+    if marker.is_dir() {
+        return Some(root.to_path_buf());
+    }
+    let pointer = std::fs::read_to_string(&marker).ok()?;
+    let gitdir = pointer.split_once("gitdir:")?.1.trim();
+    Path::new(gitdir).ancestors().nth(2)?.parent().map(Path::to_path_buf)
+}
+
+/// Linked worktrees of every repository in `dirs`, keyed by branch and by
+/// directory name. These are what a plain directory lookup cannot see: a
+/// worktree created an hour ago has never been visited, so zoxide has no row
+/// for it, but the repository it hangs off has been.
+fn worktree_candidates(dirs: &[(String, PathBuf)]) -> Vec<(String, PathBuf)> {
+    let mut repos: Vec<PathBuf> = Vec::new();
+    let mut candidates: Vec<(String, PathBuf)> = Vec::new();
+    for (_, dir) in dirs {
+        let Some(repo) = owning_repo(dir) else { continue };
+        if repos.contains(&repo) {
+            continue;
+        }
+        repos.push(repo.clone());
+        for tree in worktrees(&repo).unwrap_or_default() {
+            if tree.main {
+                continue;
+            }
+            for name in [tree.branch.clone().map(|b| b.to_lowercase()), Some(name_of(&tree.path))] {
+                let Some(name) = name else { continue };
+                if !candidates.iter().any(|(n, p)| *n == name && *p == tree.path) {
+                    candidates.push((name, tree.path.clone()));
+                }
+            }
+        }
+    }
+    candidates
+}
+
+/// The directory a name refers to: one zoxide knows, or a linked worktree of
+/// a repository it knows.
+fn discover(query: &str) -> Result<PathBuf, String> {
+    let dirs = zoxide_dirs();
+    if let Some(hit) = best(&dirs, query) {
+        return Ok(hit.clone());
+    }
+    if let Some(hit) = best(&worktree_candidates(&dirs), query) {
+        return Ok(hit.clone());
+    }
+    Err(if dirs.is_empty() {
+        format!("nothing matches {query}, and zoxide knows no directories — pass a path instead")
+    } else {
+        format!("nothing matches {query} in {} known directories or their worktrees", dirs.len())
+    })
+}
+
 enum Missing {
-    /// Cut or check out a local branch (`zz -c`).
+    /// Cut or check out a local branch.
     Branch,
-    /// Fetch and track a remote branch (`zz -t`).
+    /// Fetch and track a remote branch.
     Remote,
 }
 
@@ -184,37 +273,26 @@ fn locate(ctx: &ToolContext, input: &Value, create: Option<Missing>) -> Result<P
     let root = input["root"].as_bool().unwrap_or(false);
 
     // An empty query means this workspace, which needs no lookup at all.
-    if query.is_empty() {
-        return from_repo(ctx.workspace_root.clone(), branch, root, create);
-    }
-    if zz_bin().is_some() {
-        let target = match &branch {
-            Some(branch) => format!("{query}@{branch}"),
-            None => query.clone(),
-        };
-        let mut args = vec!["-p"];
-        if root {
-            args.push("-r");
+    let base = if query.is_empty() {
+        ctx.workspace_root.clone()
+    } else {
+        let literal = ctx.resolve(&query);
+        if literal.is_dir() {
+            literal
+        } else {
+            discover(&query)?
         }
-        match create {
-            Some(Missing::Branch) => args.push("-c"),
-            Some(Missing::Remote) => args.push("-t"),
-            None => {}
-        }
-        args.push(&target);
-        return zz(&args).map(PathBuf::from);
+    };
+    let landed = from_repo(base, branch, root, create)?;
+    // Only somewhere we navigated to is worth learning; the workspace is where
+    // we already were.
+    if landed != ctx.workspace_root {
+        zoxide_add(&landed);
     }
-    let path = ctx.resolve(&query);
-    if !path.is_dir() {
-        return Err(format!(
-            "zz is not installed, so {query} has to be a path — {} is not a directory",
-            path.display()
-        ));
-    }
-    from_repo(path, branch, root, create)
+    Ok(landed)
 }
 
-/// Resolution without zz: git's own view of the repository holding `base`.
+/// Git's own view of the repository holding `base`.
 fn from_repo(
     base: PathBuf,
     branch: Option<String>,
@@ -234,7 +312,8 @@ fn from_repo(
     }
 }
 
-/// zz's layout, so a worktree created here and one created by zz land together.
+/// A sibling `<repo>-worktrees/<slug>`, which keeps worktrees out of the
+/// repository so they never show up in its `git status`.
 fn worktree_path(repo: &Path, branch: &str) -> PathBuf {
     let name = repo.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or("repo".into());
     let slug = branch.replace('/', "-");
@@ -482,12 +561,29 @@ mod tests {
     }
 
     #[test]
-    fn worktrees_land_where_zz_puts_them() {
+    fn worktrees_land_beside_the_repository() {
         let repo = PathBuf::from("/Users/e/projects/odei");
         assert_eq!(
             worktree_path(&repo, "feat/zz"),
             PathBuf::from("/Users/e/projects/odei-worktrees/feat-zz")
         );
+    }
+
+    #[test]
+    fn the_most_specific_tier_wins_and_frecency_breaks_the_tie() {
+        let candidates: Vec<(String, PathBuf)> = ["data", "database", "metadata", "meta"]
+            .iter()
+            .map(|n| (n.to_string(), PathBuf::from("/p").join(n)))
+            .collect();
+        // Exact beats the prefix and substring matches it also has.
+        assert_eq!(best(&candidates, "data").unwrap(), &PathBuf::from("/p/data"));
+        // No exact match, one prefix match.
+        assert_eq!(best(&candidates, "datab").unwrap(), &PathBuf::from("/p/database"));
+        // Substring only — and the earlier, more-visited entry takes it.
+        assert_eq!(best(&candidates, "tadat").unwrap(), &PathBuf::from("/p/metadata"));
+        assert_eq!(best(&candidates, "ETA").unwrap(), &PathBuf::from("/p/metadata"));
+        assert!(best(&candidates, "nope").is_none());
+        assert!(best(&[], "data").is_none());
     }
 
     #[test]
@@ -575,6 +671,31 @@ mod git_tests {
     }
 
     #[test]
+    fn a_worktree_is_discoverable_before_its_first_visit() {
+        let repo = scratch_repo("discover");
+        call(&repo, json!({"action": "create", "branch": "feat/unvisited"}));
+        // Paths round-trip through git, which may canonicalize them.
+        let real = |p: &Path| p.canonicalize().unwrap();
+        let path = real(&worktree_path(&repo, "feat/unvisited"));
+
+        // A linked worktree points back at the checkout that owns it, and the
+        // checkout points at itself — both without spawning git.
+        assert_eq!(real(&owning_repo(&path).unwrap()), real(&repo));
+        assert_eq!(real(&owning_repo(&repo).unwrap()), real(&repo));
+
+        // Knowing only the repository is enough to find the worktree, which is
+        // what makes a never-visited one reachable by name.
+        let known = vec![(name_of(&repo), repo.clone())];
+        let candidates = worktree_candidates(&known);
+        let found = |fragment| best(&candidates, fragment).map(|p| real(p));
+        assert_eq!(found("feat/unvisited").unwrap(), path, "by branch");
+        assert_eq!(found("unvisit").unwrap(), path, "by branch substring");
+        assert_eq!(found("feat-unvisited").unwrap(), path, "by directory name");
+        // The main checkout is already reachable directly, so it is not listed.
+        assert!(candidates.iter().all(|(_, p)| real(p) != real(&repo)));
+    }
+
+    #[test]
     fn a_named_branch_narrows_the_cleanup() {
         let repo = scratch_repo("named");
         call(&repo, json!({"action": "create", "branch": "landed"}));
@@ -585,6 +706,7 @@ mod git_tests {
         assert!(worktree_path(&repo, "spare").is_dir());
     }
 }
+
 
 
 

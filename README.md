@@ -172,16 +172,20 @@ merged    which worktrees have landed, and why the rest haven't
 clean     retire the landed ones: remove, delete the branch, prune
 ```
 
-Resolution goes through [`zz`](https://github.com/enekos/zz) when it is installed, which ranks
-the directories you actually visit and, failing that, scans the linked worktrees of every
-repository it knows — so a branch fragment finds a checkout nobody has opened yet. Without `zz`
-the query has to be a path, and everything else works the same, because it is git underneath.
-New worktrees land in `zz`'s layout, a sibling `<repo>-worktrees/<branch-slug>`, honouring
-`ZZ_WORKTREE_DIR` and `ZZ_WORKTREE_BASE`.
+A query is matched against the directories [`zoxide`](https://github.com/ajeetdsouza/zoxide)
+already ranks by how often you visit them, most-visited first, so `data` means the `data` you
+work in rather than the first one on disk. When nothing there matches, it falls back to the
+linked worktrees of every repository in that list — which is how a branch fragment finds a
+checkout nobody has opened yet, since an hour-old worktree has no frecency to rank. Landing
+somewhere teaches it back to zoxide, so worktrees climb the list the way visited directories
+do. No zoxide, or a query that names a real path, and it is used as a path.
 
-```bash
-cargo install zz-cli   # the crate is zz-cli, the binary is zz
-```
+That is the only thing asked of another program; the branch matching, the worktree layout, and
+the cleanup are all here. New worktrees go in a sibling `<repo>-worktrees/<branch-slug>`, which
+keeps them out of the repository's `git status`, and `ZZ_WORKTREE_DIR` / `ZZ_WORKTREE_BASE`
+relocate them and change the base ref — the same variables
+[`zz`](https://github.com/enekos/zz) reads, so the two agree about where things live if you
+use both.
 
 `clean` is the one action that deletes, so it is deliberately timid. A branch counts as landed
 when it is an ancestor of the base branch, or when `gh` reports a merged pull request for it —
