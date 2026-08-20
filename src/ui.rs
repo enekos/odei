@@ -1,9 +1,10 @@
 //! Interactive shell: closer to a Unix shell than an IDE-in-the-terminal
-//! TUI. Welcome line, dim statusline, `❯ ` input with
+//! TUI. Splash, dim statusline, `❯ ` input with
 //! slash commands, streamed assistant text, `●`/`├`/`└` tool activity lines,
 //! and a y/a/n approval prompt for sensitive actions.
 
 use crate::agent::{Agent, Approval, Sink};
+use crate::cloud::Cloud;
 use crate::config::{Config, PermissionMode, KNOWN_MODELS};
 use crate::markdown;
 use crate::provider::ContentBlock;
@@ -32,10 +33,12 @@ pub fn install_sigint_handler() {
 }
 
 pub struct ShellSink<'t> {
-    theme: &'t Theme,
+    theme: &'static Theme,
     /// The model writes markdown; this turns it into terminal output as it
     /// streams.
     markdown: markdown::Renderer<'t>,
+    /// The drifting mist under the "Thinking…" line, while the model works.
+    cloud: Option<Cloud>,
     waiting_line: bool,
     tool_line_open: bool,
     printed_text: bool,
@@ -43,10 +46,11 @@ pub struct ShellSink<'t> {
 }
 
 impl<'t> ShellSink<'t> {
-    pub fn new(theme: &'t Theme, interactive: bool) -> Self {
+    pub fn new(theme: &'static Theme, interactive: bool) -> Self {
         ShellSink {
             theme,
             markdown: markdown::Renderer::new(theme),
+            cloud: None,
             waiting_line: false,
             tool_line_open: false,
             printed_text: false,
@@ -56,6 +60,12 @@ impl<'t> ShellSink<'t> {
 
     fn clear_transient(&mut self) {
         if self.waiting_line {
+            // The cloud sits below the waiting line; it must stop before
+            // the line it hangs from is erased.
+            if let Some(cloud) = &mut self.cloud {
+                cloud.clear();
+            }
+            self.cloud = None;
             print!("\r\x1b[2K");
             self.waiting_line = false;
         }
@@ -89,6 +99,8 @@ impl Sink for ShellSink<'_> {
         print!("{}{}…{}", self.theme.dim, theme::ASK_ACTIVITY_LABEL, self.theme.reset());
         let _ = std::io::stdout().flush();
         self.waiting_line = true;
+        println!();
+        self.cloud = Cloud::maybe_start(self.theme, true);
     }
 
     fn on_text_delta(&mut self, text: &str) {
@@ -260,6 +272,24 @@ fn git_branch(workspace: &std::path::Path) -> Option<String> {
     }
 }
 
+fn workspace_name(agent: &Agent) -> String {
+    agent
+        .config
+        .workspace_root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| agent.config.workspace_root.display().to_string())
+}
+
+/// The dim line under the splash wordmark: what this session is pointed at.
+fn splash_subtitle(agent: &Agent) -> String {
+    format!("{} · {}", agent.config.model, workspace_name(agent))
+}
+
+fn splash(theme: &Theme, agent: &Agent) {
+    crate::splash::show(theme, env!("CARGO_PKG_VERSION"), &splash_subtitle(agent));
+}
+
 fn statusline(theme: &Theme, agent: &Agent) -> String {
     let mode = agent.config.permission_mode;
     let mode_label = match mode {
@@ -267,13 +297,7 @@ fn statusline(theme: &Theme, agent: &Agent) -> String {
         PermissionMode::Auto => format!("{}auto{}", theme.permission_auto, theme.statusline),
         PermissionMode::Yolo => format!("{}YOLO{}", theme.permission_auto, theme.statusline),
     };
-    let workspace = agent
-        .config
-        .workspace_root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| agent.config.workspace_root.display().to_string());
-    let mut segments = vec![mode_label, agent.config.model.clone(), workspace];
+    let mut segments = vec![mode_label, agent.config.model.clone(), workspace_name(agent)];
     if let Some(branch) = git_branch(&agent.config.workspace_root) {
         segments.push(branch);
     }
@@ -306,6 +330,7 @@ const HELP: &[(&str, &str)] = &[
     ("/compact", "summarize older turns to free up context"),
     ("/copy", "put my last reply on the clipboard"),
     ("/setup", "store a Kimi API key"),
+    ("/splash", "watch the cloud condense again"),
     ("/version", "print the version"),
     ("/quit", "leave"),
 ];
@@ -379,7 +404,7 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
     let resumed = !session.messages.is_empty();
     let mut agent = Agent::new(config, session);
 
-    print!("{}", theme::welcome_message(theme, env!("CARGO_PKG_VERSION")));
+    splash(theme, &agent);
     if agent.config.api_key.is_none() {
         println!(
             "{}No API key found. Run /setup or set KIMI_API_KEY.{}",
@@ -445,8 +470,9 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                 "clear" => {
                     print!("\x1b[2J\x1b[H");
                     agent.session = Session::create(&agent.config.workspace_root, &agent.config.model);
-                    print!("{}", theme::welcome_message(theme, env!("CARGO_PKG_VERSION")));
+                    splash(theme, &agent);
                 }
+                "splash" => splash(theme, &agent),
                 "new" => {
                     agent.session = Session::create(&agent.config.workspace_root, &agent.config.model);
                     println!("{}started session {}{}", theme.dim, agent.session.meta.id, theme.reset());

@@ -77,6 +77,26 @@ odei
 
 The current directory becomes the workspace. Type a prompt, or `/help` for interactive commands.
 
+*odei* is Basque for cloud, so it opens as one: the wordmark condenses out of drifting
+mist — a noise cloud blowing across the field while the letters thicken to solid — in
+about four tenths of a second, seeded from the clock, so no two launches look alike.
+
+```
+      ██████      ████████    ██████
+    ██      ██  ██      ██  ██      ██  ██
+    ██      ██  ██      ██  ██████████  ██
+    ██      ██  ██      ██  ██          ██
+      ██████      ████████    ██████    ██
+    ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+    v0.1.0 · kimi-for-coding · your_project
+```
+
+`/splash` plays it again. It is grayscale like the rest of the shell, it redraws in place
+rather than clearing the screen, Ctrl+C cuts to the settled frame, and it gets out of the
+way on its own: a pipe, `NO_COLOR` or a window too narrow for the wordmark prints the
+one-line greeting instead, a window too short to redraw draws the settled frame without
+animating, and `ODEI_SPLASH=off` (or `=static`) makes either the rule.
+
 One-shot, non-interactive:
 
 ```bash
@@ -276,6 +296,7 @@ when two of them disagree the one scoped nearest the files being touched wins.
 | `ODEI_MAX_AGENT_STEPS` | agent loop step cap (default 120) |
 | `ODEI_THEME` | `light` / `dark` (auto-detected otherwise) |
 | `ODEI_MARKDOWN` | `off` to print the model's markdown source verbatim |
+| `ODEI_SPLASH` | `off` for the one-line greeting, `static` for the settled wordmark |
 | `NO_COLOR` | disable styling |
 
 Profile data lives in `~/.odei`: `config.json`, `permissions.json`, `sessions/*.jsonl`,
