@@ -1,33 +1,210 @@
 //! Noninteractive CLI surface: ask, setup, status, doctor, models, sessions.
+//!
+//! `ask` is also the machine-readable surface. `--output-format json` answers
+//! with one object — the reply, the session, what ran, what it cost — and
+//! `stream-json` writes the same NDJSON events `odei serve` speaks, so a
+//! script can watch a turn instead of waiting for it. Anything piped in on
+//! stdin joins the prompt, which makes `odei ask` an ordinary filter.
 
-use crate::agent::{Agent, Sink};
+use crate::agent::{Agent, Approval, Sink, ToolDone, ToolStart};
 use crate::config::{Config, KNOWN_MODELS};
 use crate::session::{self, Session};
 use crate::theme::Theme;
 use crate::ui::{self, ShellSink, CANCEL};
+use serde_json::{json, Value};
 use std::io::Write as _;
 
-pub fn ask(config: Config, prompt: &str) -> i32 {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OutputFormat {
+    Text,
+    Json,
+    StreamJson,
+}
+
+impl OutputFormat {
+    pub fn parse(value: &str) -> Option<OutputFormat> {
+        match value {
+            "text" => Some(OutputFormat::Text),
+            "json" => Some(OutputFormat::Json),
+            "stream-json" | "stream_json" | "ndjson" => Some(OutputFormat::StreamJson),
+            _ => None,
+        }
+    }
+}
+
+const ASK_USAGE: &str =
+    "usage: odei ask [--output-format text|json|stream-json] \"<prompt>\" (or pipe it in)";
+
+/// Everything a turn produced that the agent does not already know: which
+/// tools ran, and anything it said outside the answer.
+#[derive(Default)]
+struct RecordSink {
+    tools: Vec<Value>,
+    notices: Vec<String>,
+}
+
+impl Sink for RecordSink {
+    fn on_waiting(&mut self, _step: usize) {}
+    fn on_text_delta(&mut self, _text: &str) {}
+    fn on_text_done(&mut self) {}
+    fn on_group_start(&mut self, _summary: &str) {}
+    fn on_tool_start(&mut self, _start: &ToolStart) {}
+
+    fn on_tool_done(&mut self, done: &ToolDone) {
+        self.tools.push(json!({
+            "tool": done.tool,
+            "label": done.label,
+            "ms": done.elapsed.as_millis(),
+            "error": done.is_error,
+            "call": done.call,
+        }));
+    }
+
+    fn on_notice(&mut self, text: &str) {
+        self.notices.push(text.to_string());
+    }
+
+    fn request_approval(&mut self, tool: &str, label: &str, _detail: &str) -> Approval {
+        self.notices.push(format!("denied {label} ({tool}): nobody here to approve it"));
+        Approval::Deny
+    }
+}
+
+pub fn parse_ask_args(args: &[String]) -> Result<(OutputFormat, String), String> {
+    let mut format = OutputFormat::Text;
+    let mut words: Vec<&str> = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if let Some(value) = arg.strip_prefix("--output-format=") {
+            format = OutputFormat::parse(value).ok_or_else(|| unknown_format(value))?;
+        } else if arg == "--output-format" {
+            let value = args.get(index + 1).ok_or_else(|| unknown_format(""))?;
+            format = OutputFormat::parse(value).ok_or_else(|| unknown_format(value))?;
+            index += 1;
+        } else if arg == "--json" {
+            format = OutputFormat::Json;
+        } else {
+            words.push(arg);
+        }
+        index += 1;
+    }
+    Ok((format, words.join(" ").trim().to_string()))
+}
+
+fn unknown_format(value: &str) -> String {
+    format!("--output-format takes text, json, or stream-json, not {value:?}")
+}
+
+/// Read stdin when it is not a terminal, so a pipe reaches the prompt.
+pub fn read_piped_stdin() -> Option<String> {
+    use std::io::{IsTerminal, Read};
+    if std::io::stdin().is_terminal() {
+        return None;
+    }
+    let mut buffer = String::new();
+    std::io::stdin().read_to_string(&mut buffer).ok()?;
+    (!buffer.trim().is_empty()).then_some(buffer)
+}
+
+pub fn compose_prompt(typed: &str, piped: Option<String>) -> Result<String, String> {
+    let typed = typed.trim();
+    match (typed.is_empty(), piped) {
+        (true, None) => Err(ASK_USAGE.to_string()),
+        (true, Some(input)) => Ok(input.trim().to_string()),
+        (false, None) => Ok(typed.to_string()),
+        (false, Some(input)) => Ok(format!(
+            "{typed}\n\n---\n\nPiped to odei on stdin:\n\n{}",
+            input.trim_end()
+        )),
+    }
+}
+
+fn turn_report(
+    agent: &Agent,
+    model: &str,
+    elapsed: std::time::Duration,
+    result: &Result<(), String>,
+) -> Value {
+    json!({
+        "ok": result.is_ok(),
+        "error": result.as_ref().err(),
+        "result": ui::last_assistant_text(agent).unwrap_or_default(),
+        "session_id": agent.session.meta.id,
+        "model": model,
+        "turns": agent.turns,
+        "ms": elapsed.as_millis(),
+        "usage": {
+            "input_tokens": agent.total_usage.input_tokens,
+            "output_tokens": agent.total_usage.output_tokens,
+            "cache_read_tokens": agent.total_usage.cache_read_tokens,
+            "cache_write_tokens": agent.total_usage.cache_write_tokens,
+            "context_tokens": agent.last_input_tokens,
+        },
+    })
+}
+
+fn report_failure(format: OutputFormat, message: &str) -> i32 {
+    match format {
+        OutputFormat::Text => eprintln!("odei: {message}"),
+        OutputFormat::Json => {
+            let body = json!({"ok": false, "error": message});
+            println!("{}", serde_json::to_string_pretty(&body).unwrap_or_default());
+        }
+        OutputFormat::StreamJson => {
+            println!("{}", json!({"event": "result", "ok": false, "error": message}));
+        }
+    }
+    1
+}
+
+pub fn ask(config: Config, prompt: &str, format: OutputFormat) -> i32 {
     if config.api_key.is_none() {
-        eprintln!("odei: no API key configured; run `odei setup` or set KIMI_API_KEY");
-        return 1;
+        return report_failure(
+            format,
+            "no API key configured; run `odei setup` or set KIMI_API_KEY",
+        );
     }
     ui::install_sigint_handler();
+    let model = config.model.clone();
     let session = Session::create(&config.workspace_root, &config.model);
     let mut agent = Agent::new(config, session);
-    let theme = Theme::detect();
-    let interactive = std::io::IsTerminal::is_terminal(&std::io::stdout());
-    let detail = agent.config.detail;
-    let mut sink = ShellSink::new(theme, interactive, detail);
     CANCEL.store(false, std::sync::atomic::Ordering::Relaxed);
-    match agent.run_user_turn(prompt, &CANCEL, &mut sink) {
-        Ok(()) => {
-            sink.on_text_done();
-            0
+    let started = std::time::Instant::now();
+
+    match format {
+        OutputFormat::Text => {
+            let theme = Theme::detect();
+            let interactive = std::io::IsTerminal::is_terminal(&std::io::stdout());
+            let detail = agent.config.detail;
+            let mut sink = ShellSink::new(theme, interactive, detail);
+            match agent.run_user_turn(prompt, &CANCEL, &mut sink) {
+                Ok(()) => {
+                    sink.on_text_done();
+                    0
+                }
+                Err(e) => {
+                    eprintln!("odei: {e}");
+                    1
+                }
+            }
         }
-        Err(e) => {
-            eprintln!("odei: {e}");
-            1
+        OutputFormat::Json => {
+            let mut sink = RecordSink::default();
+            let result = agent.run_user_turn(prompt, &CANCEL, &mut sink);
+            let mut report = turn_report(&agent, &model, started.elapsed(), &result);
+            report["tools"] = json!(sink.tools);
+            report["notices"] = json!(sink.notices);
+            println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+            i32::from(result.is_err())
+        }
+        OutputFormat::StreamJson => {
+            let mut sink = crate::serve::detached_json_sink();
+            let result = agent.run_user_turn(prompt, &CANCEL, &mut sink);
+            let mut report = turn_report(&agent, &model, started.elapsed(), &result);
+            report["event"] = json!("result");
+            println!("{report}");
+            i32::from(result.is_err())
         }
     }
 }
@@ -193,7 +370,9 @@ pub fn help() -> i32 {
     println!();
     println!("usage:");
     println!("  odei                       interactive session in the current workspace");
-    println!("  odei ask \"<prompt>\"        single noninteractive request");
+    println!("  odei ask \"<prompt>\"        single noninteractive request; stdin joins the prompt");
+    println!("       [--output-format text|json|stream-json]");
+    println!("                             text (default), one JSON report, or NDJSON events");
     println!("  odei sessions              list saved sessions");
     println!("  odei session resume last   resume the latest session for this workspace");
     println!("  odei session resume --id <id>");

@@ -35,12 +35,15 @@ fn main() {
     let code = match args.first().map(String::as_str) {
         None => ui::run_interactive(config, None),
         Some("ask") => {
-            let prompt = args[1..].join(" ");
-            if prompt.trim().is_empty() {
-                eprintln!("usage: odei ask \"<prompt>\"");
-                2
-            } else {
-                cli::ask(config, &prompt)
+            let parsed = cli::parse_ask_args(&args[1..]).and_then(|(format, typed)| {
+                cli::compose_prompt(&typed, cli::read_piped_stdin()).map(|prompt| (format, prompt))
+            });
+            match parsed {
+                Ok((format, prompt)) => cli::ask(config, &prompt, format),
+                Err(e) => {
+                    eprintln!("odei: {e}");
+                    2
+                }
             }
         }
         Some("sessions") => cli::sessions(),

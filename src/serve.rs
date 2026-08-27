@@ -153,6 +153,15 @@ impl Sink for JsonSink {
     }
 }
 
+/// The same NDJSON event stream, with nobody on the other end to answer an
+/// approval — what `odei ask --output-format stream-json` writes. The answer
+/// channel is closed from the start, so anything that stops for permission is
+/// denied instead of hanging.
+pub fn detached_json_sink() -> impl Sink {
+    let (_closed, answers) = channel();
+    JsonSink { answers, next_approval: 0, streaming: false }
+}
+
 /// Read commands forever, routing the two that must be handled mid-turn.
 fn read_stdin(commands: Sender<Command>, answers: Sender<Answer>) {
     let stdin = std::io::stdin();

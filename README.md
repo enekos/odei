@@ -103,6 +103,33 @@ One-shot, non-interactive:
 odei ask "explain the changes in this repository"
 ```
 
+Anything piped in joins the prompt, which makes `ask` an ordinary filter:
+
+```bash
+git diff | odei ask "review this"
+cargo test 2>&1 | odei ask "why did this fail?"
+```
+
+`--output-format` decides who is reading. `text` (the default) renders for a terminal; `json`
+answers with one object — the reply, the session id, the model, what ran, what it cost; and
+`stream-json` writes the same NDJSON events [`odei serve`](#serve) speaks, so a script can watch
+a turn instead of waiting for it.
+
+```bash
+$ echo 'Reply with exactly: OK' | odei ask --output-format stream-json
+{"event":"waiting","step":1}
+{"delta":"OK","event":"text"}
+{"event":"text_end"}
+{"event":"step","step":1,"input_tokens":4300,"output_tokens":17,"ms":4767,"tool_calls":0}
+{"event":"result","ok":true,"result":"OK","session_id":"20260827-084206-18e3", …}
+```
+
+Both machine formats exit non-zero on a failed turn and report the error in the payload rather
+than on stderr. Nobody is there to answer an approval prompt, so anything sensitive enough to
+stop for one is denied instead of hanging — `json` names it in `notices`, `stream-json` emits the
+`approval` event and then denies it. Give an unattended run a saved rule, or
+`ODEI_PERMISSIONS=yolo`.
+
 Sessions persist automatically:
 
 ```bash
