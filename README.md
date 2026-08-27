@@ -111,6 +111,60 @@ odei session resume last
 odei session resume --id <id>
 ```
 
+## Three prefixes at the prompt
+
+A line that starts with `@`, `!` or `#` is handled before the model sees anything.
+
+**`@<path>` attaches it.** A file comes in whole; a directory comes in as its `code_outline`
+map, or a plain listing if nothing in it parses. The paths are read as of that turn and the
+model is told it has already read them, so it does not spend a tool call re-reading. Quote a
+path with spaces — `@"my notes.md"` — and note that `eneko@example.com` is left alone: `@` only
+counts at the start of a word. Ten attachments and 64 KB per message; past that the rest is cut
+with a pointer to `read_file`.
+
+```
+› explain @src/mentions.rs against @src
+attached @src/mentions.rs (file, 151 lines) · @src (map, 84 lines)
+```
+
+**`!<command>` runs it yourself.** It skips the permission gate — you are the one asking — but
+it is journalled like any other call, so `/call N` replays it in full. The command and its
+output ride along with your *next* message rather than starting a turn, which means you can
+look at something first and then ask about it without pasting.
+
+```
+› !cargo test 2>&1 | tail -5
+└ Ran cargo test · 0.9s · 131 passed
+  test result: ok. 131 passed; 0 failed
+```
+
+**`#<note>` remembers it.** It appends the note as a bullet to `AGENTS.md`, asking first whether
+it belongs to this project or to every workspace — `p` writes `./AGENTS.md`, `g` writes
+`~/.odei/AGENTS.md`. Both are read back as project instructions on every turn, so a `#` note is
+in force from the next message on.
+
+## Your own commands
+
+A markdown file in `.odei/commands/` is a slash command. `deploy-check.md` becomes
+`/deploy-check`, and its body is sent as the prompt:
+
+```markdown
+---
+description: check the release is safe to tag
+---
+
+Run the tests and clippy, then read the diff against the last tag and tell me
+what would ship in $ARGUMENTS.
+```
+
+`$ARGUMENTS` is everything typed after the command, `$1`–`$9` are its words. A body with no
+placeholder gets the arguments appended to it instead, so a command never silently drops what
+you typed. Project commands live in `.odei/commands/`, personal ones in `~/.odei/commands/`, and
+a project name shadows a personal one. `/help` lists both under the built-ins.
+
+Tab completes commands at the start of a line — built-in and your own, from the same table
+`/help` prints — and paths after `@`, directories first.
+
 ## Permissions
 
 `odei` starts in **auto** mode: routine development actions run directly, while sensitive ones —
@@ -418,7 +472,8 @@ Module map: `provider.rs` (Kimi SSE client) · `agent.rs` (tool loop) · `tools/
 implementations, incl. `outline.rs`) · `ui.rs` (interactive shell) · `serve.rs` (NDJSON
 front-end protocol) · `permissions.rs` · `session.rs` · `compact.rs` (history
 summarization) · `calls.rs` (call journal + reports) · `inspect.rs` (picker + side pane) ·
-`context.rs` (system prompt + runtime context) · `theme.rs`.
+`context.rs` (system prompt + runtime context) · `mentions.rs` (`@` attachments) ·
+`commands.rs` (user-defined slash commands) · `complete.rs` (Tab completion) · `theme.rs`.
 
 The Swift side splits into `OdeiCore` (protocol, process, transcript) and `OdeiUI`
 (views), so the model layer can be checked without a window — XCTest ships with Xcode,

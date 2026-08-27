@@ -74,6 +74,16 @@ pub trait Sink {
     fn request_approval(&mut self, tool: &str, label: &str, detail: &str) -> Approval;
 }
 
+/// A command the *user* ran from the shell prompt, already journalled.
+pub struct ShellRun {
+    pub label: String,
+    pub input: Value,
+    pub output: String,
+    pub is_error: bool,
+    pub call: usize,
+    pub elapsed: std::time::Duration,
+}
+
 pub struct Agent {
     pub config: Config,
     pub tool_context: ToolContext,
@@ -86,6 +96,10 @@ pub struct Agent {
     /// Input tokens on the most recent request — the live context size, as
     /// opposed to `total_usage`, which accumulates over the session.
     pub last_input_tokens: u64,
+    /// Blocks waiting to ride along with the next user turn — what the user
+    /// ran themselves with `!`. Held rather than appended so the transcript
+    /// keeps alternating roles.
+    pub pending_context: Vec<String>,
 }
 
 impl Agent {
@@ -102,6 +116,47 @@ impl Agent {
             turns: 0,
             total_usage: Usage::default(),
             last_input_tokens: 0,
+            pending_context: Vec::new(),
+        }
+    }
+
+    /// Run a command the user typed themselves. It skips the permission gate —
+    /// they are the one asking — but is journalled like any other call, and
+    /// what it printed rides along with their next message.
+    pub fn run_shell(&mut self, command: &str) -> ShellRun {
+        let input = serde_json::json!({ "action": "exec", "command": command });
+        let started = std::time::Instant::now();
+        let outcome = crate::tools::terminal::terminal(&self.tool_context, &input);
+        let elapsed = started.elapsed();
+        let label = match tools::find("terminal") {
+            Some(spec) => tools::activity_label(spec, &input, true),
+            None => format!("Ran {command}"),
+        };
+        let call = self.journal.record(
+            "terminal",
+            &label,
+            &input,
+            &self.tool_context.workspace_root,
+            elapsed,
+            &outcome,
+        );
+        let shared = format!(
+            "The user ran this in their own shell, not through you:\n\n$ {command}\n\n{}",
+            outcome.text.trim_end()
+        );
+        let shared = if shared.len() > tools::results::INLINE_CAP {
+            self.tool_context.results.preview(&shared)
+        } else {
+            shared
+        };
+        self.pending_context.push(shared);
+        ShellRun {
+            label,
+            input,
+            output: outcome.text,
+            is_error: outcome.is_error,
+            call,
+            elapsed,
         }
     }
 
@@ -158,12 +213,14 @@ impl Agent {
         cancel: &AtomicBool,
         sink: &mut dyn Sink,
     ) -> Result<(), String> {
-        // Runtime context rides along as part of the user turn.
-        let contextualized = format!(
-            "{}\n\n---\n\n{}",
-            context::runtime_context(&self.config.workspace_root),
-            user_text
-        );
+        // Runtime context rides along as part of the user turn, and so does
+        // anything the user ran themselves since the last one.
+        let mut preamble = context::runtime_context(&self.config.workspace_root);
+        for block in self.pending_context.drain(..) {
+            preamble.push_str("\n\n---\n\n");
+            preamble.push_str(&block);
+        }
+        let contextualized = format!("{preamble}\n\n---\n\n{user_text}");
         self.compact_if_needed(cancel, sink);
         self.session.append(Message::user_text(&contextualized));
         self.turns += 1;

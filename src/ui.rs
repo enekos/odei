@@ -15,6 +15,7 @@ use crate::activity::{self, Call};
 use crate::agent::{Agent, Approval, Sink, StepDone, ToolDone, ToolStart};
 use crate::blinker::Blinker;
 use crate::config::{Config, Detail, PermissionMode, KNOWN_MODELS};
+use crate::context::NoteScope;
 use crate::markdown;
 use crate::provider::ContentBlock;
 use crate::session::{self, Session};
@@ -560,6 +561,9 @@ fn statusline(theme: &Theme, agent: &Agent) -> String {
 }
 
 const HELP: &[(&str, &str)] = &[
+    ("@<path>", "attach a file — or a directory's map — to your message"),
+    ("!<command>", "run a command yourself; I see it with your next message"),
+    ("#<note>", "remember something in AGENTS.md"),
     ("/help", "list these commands"),
     ("/clear", "wipe the screen and begin a new session"),
     ("/new", "begin a new session, keeping this one saved"),
@@ -587,7 +591,7 @@ const HELP: &[(&str, &str)] = &[
     ("/quit", "leave"),
 ];
 
-fn print_help(theme: &Theme) {
+fn print_help(theme: &Theme, workspace: &std::path::Path) {
     for (command, description) in HELP {
         println!(
             "{}{:<38}{}{}{description}{}",
@@ -598,6 +602,41 @@ fn print_help(theme: &Theme) {
             theme.reset()
         );
     }
+    let user_commands = crate::commands::list(workspace);
+    if user_commands.is_empty() {
+        println!();
+        println!(
+            "{}your own commands go in .odei/commands/<name>.md (this project) or {}/commands/<name>.md{}",
+            theme.dim,
+            crate::config::odei_home().display(),
+            theme.reset()
+        );
+        return;
+    }
+    println!();
+    for command in user_commands {
+        let description = command
+            .description
+            .unwrap_or_else(|| command.body.lines().next().unwrap_or("").to_string());
+        println!(
+            "{}{:<38}{}{}{} · {}{}",
+            theme.hint,
+            format!("/{}", command.name),
+            theme.reset(),
+            theme.dim,
+            activity::clip(&description, 60),
+            command.scope.label(),
+            theme.reset()
+        );
+    }
+}
+
+/// The names `/`-completion offers, taken from the same table `/help` prints.
+pub fn builtin_command_names() -> Vec<&'static str> {
+    HELP.iter()
+        .filter_map(|(command, _)| command.strip_prefix('/'))
+        .map(|command| command.split([' ', '(']).next().unwrap_or(command))
+        .collect()
 }
 
 /// Cache accounting for /stats: how much of the prompt came back from cache
@@ -718,7 +757,123 @@ fn reprint_calls(theme: &Theme, session_id: &str, arg: &str) {
     }
 }
 
-fn last_assistant_text(agent: &Agent) -> Option<String> {
+/// A command the user ran with `!`, drawn like any other call — except that
+/// they asked for the output, so it is shown whatever the detail level says.
+fn print_shell_run(theme: &Theme, run: &crate::agent::ShellRun) {
+    const OUTPUT_LINES: usize = 40;
+    let call = Call {
+        tool: "terminal",
+        input: &run.input,
+        output: &run.output,
+        is_error: run.is_error,
+        diff: None,
+        call: Some(run.call),
+    };
+    println!(
+        "{}",
+        activity_line(
+            theme,
+            width(),
+            "└",
+            &run.label,
+            activity::qualifier("terminal", &run.input),
+            call.stat(),
+            activity::duration(run.elapsed.as_millis() as u64),
+            Some(run.call),
+            run.is_error,
+        )
+    );
+    let lines: Vec<&str> = run.output.lines().collect();
+    let shown: Vec<&str> = if lines.len() <= OUTPUT_LINES {
+        lines.clone()
+    } else {
+        lines[lines.len() - OUTPUT_LINES..].to_vec()
+    };
+    let elided = lines.len() - shown.len();
+    let room = width().saturating_sub(BODY_MARGIN);
+    let mut body: Vec<String> = Vec::new();
+    if elided > 0 {
+        body.push(format!(
+            "{}… {elided} earlier lines · /call {}{}",
+            theme.dim,
+            run.call,
+            theme.reset()
+        ));
+    }
+    for line in shown {
+        body.push(format!("{}{}{}", theme.dim, activity::clip(line, room), theme.reset()));
+    }
+    print_body(theme, body, true);
+    println!();
+}
+
+/// `#note` — where should this be remembered?
+fn read_note_scope() -> Option<NoteScope> {
+    if crossterm::terminal::enable_raw_mode().is_err() {
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        return match line.trim() {
+            "p" | "P" | "" => Some(NoteScope::Project),
+            "g" | "G" => Some(NoteScope::Global),
+            _ => None,
+        };
+    }
+    let chosen = loop {
+        match crossterm::event::read() {
+            Ok(Event::Key(key)) => match key.code {
+                KeyCode::Char('p') | KeyCode::Char('P') | KeyCode::Enter => {
+                    break Some(NoteScope::Project)
+                }
+                KeyCode::Char('g') | KeyCode::Char('G') => break Some(NoteScope::Global),
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => break None,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break None,
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(_) => break None,
+        }
+    };
+    let _ = crossterm::terminal::disable_raw_mode();
+    chosen
+}
+
+fn remember_flow(theme: &Theme, workspace: &std::path::Path, note: &str) {
+    let note = note.trim();
+    if note.is_empty() {
+        println!(
+            "{}usage: #<note> — writes it to AGENTS.md, where I read it every turn{}",
+            theme.dim,
+            theme.reset()
+        );
+        return;
+    }
+    println!("{}● Remember{}", theme.subtitle, theme.reset());
+    println!("{INDENT}{}{note}{}", theme.hint, theme.reset());
+    println!();
+    println!(
+        "{INDENT}{} p {}  this project    {} g {}  everywhere    {} esc {}  cancel",
+        theme.approval_button_active,
+        theme.reset(),
+        theme.approval_button_inactive,
+        theme.reset(),
+        theme.approval_button_inactive,
+        theme.reset()
+    );
+    let Some(scope) = read_note_scope() else {
+        println!("{INDENT}{}└ not saved{}", theme.dim, theme.reset());
+        println!();
+        return;
+    };
+    match crate::context::remember(workspace, scope, note) {
+        Ok(path) => {
+            println!("{INDENT}{}└ saved to {}{}", theme.dim, path.display(), theme.reset())
+        }
+        Err(e) => println!("{INDENT}{}└ could not save: {e}{}", theme.warning, theme.reset()),
+    }
+    println!();
+}
+
+pub fn last_assistant_text(agent: &Agent) -> Option<String> {
     agent.session.messages.iter().rev().find_map(|message| {
         if message.role != "assistant" {
             return None;
@@ -772,15 +927,24 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
         );
     }
 
-    let mut editor = match rustyline::DefaultEditor::new() {
+    let mut editor: rustyline::Editor<
+        crate::complete::OdeiHelper,
+        rustyline::history::DefaultHistory,
+    > = match rustyline::Editor::new() {
         Ok(editor) => editor,
         Err(e) => {
             eprintln!("odei: cannot initialize input: {e}");
             return 1;
         }
     };
+    // Tab completes slash commands at the start of a line and paths after @.
+    editor.set_helper(Some(crate::complete::OdeiHelper::new(
+        &agent.config.workspace_root,
+        builtin_command_names(),
+    )));
     let history_path = crate::config::odei_home().join("history");
     let _ = editor.load_history(&history_path);
+    let mut shell_hint_shown = false;
 
     loop {
         // The input block owns vertical room on both sides — a blank line
@@ -809,25 +973,62 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
         let _ = editor.save_history(&history_path);
         println!();
 
+        if let Some(note) = input.strip_prefix('#') {
+            remember_flow(theme, &agent.config.workspace_root, note);
+            continue;
+        }
+
+        if let Some(command) = input.strip_prefix('!') {
+            let command = command.trim();
+            if command.is_empty() {
+                println!(
+                    "{}usage: !<command> — runs it here, and I see it with your next message{}",
+                    theme.dim,
+                    theme.reset()
+                );
+                continue;
+            }
+            let run = agent.run_shell(command);
+            print_shell_run(theme, &run);
+            if !shell_hint_shown {
+                shell_hint_shown = true;
+                println!(
+                    "{}that command and its output ride along with your next message{}",
+                    theme.dim,
+                    theme.reset()
+                );
+            }
+            continue;
+        }
+
+        // What the model is asked, once slash commands and @ mentions have
+        // had their say. `None` means the line was handled here and there is
+        // no turn to run.
+        let mut queued: Option<String> = Some(input.to_string());
+
         if let Some(rest) = input.strip_prefix('/') {
+            queued = None;
             let mut parts = rest.splitn(2, ' ');
             let command = parts.next().unwrap_or("");
             let arg = parts.next().unwrap_or("").trim();
             match command {
-                "help" => print_help(theme),
+                "help" => print_help(theme, &agent.config.workspace_root),
                 "quit" | "exit" => break,
                 "version" => println!("odei {}", env!("CARGO_PKG_VERSION")),
                 "clear" => {
                     print!("\x1b[2J\x1b[H");
+                    agent.pending_context.clear();
                     agent.session = Session::create(&agent.config.workspace_root, &agent.config.model);
                     splash(theme, &agent);
                 }
                 "splash" => splash(theme, &agent),
                 "new" => {
+                    agent.pending_context.clear();
                     agent.session = Session::create(&agent.config.workspace_root, &agent.config.model);
                     println!("{}started session {}{}", theme.dim, agent.session.meta.id, theme.reset());
                 }
                 "reset" => {
+                    agent.pending_context.clear();
                     agent.session.messages.clear();
                     agent.session.rewrite();
                     println!("{}session context reset{}", theme.dim, theme.reset());
@@ -863,6 +1064,7 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                                         session.messages.len(),
                                         theme.reset()
                                     );
+                                    agent.pending_context.clear();
                                     agent.session = session;
                                 }
                             }
@@ -1067,19 +1269,42 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                         agent.config = Config::load(&agent.config.workspace_root);
                     }
                 }
-                other => println!(
-                    "{}unknown command: /{other} — run /help{}",
-                    theme.dim,
-                    theme.reset()
-                ),
+                other => match crate::commands::find(&agent.config.workspace_root, other) {
+                    Some(command) => {
+                        println!(
+                            "{}/{} · {} command{}",
+                            theme.dim,
+                            command.name,
+                            command.scope.label(),
+                            theme.reset()
+                        );
+                        queued = Some(crate::commands::expand(&command.body, arg));
+                    }
+                    None => println!(
+                        "{}unknown command: /{other} — run /help{}",
+                        theme.dim,
+                        theme.reset()
+                    ),
+                },
             }
-            continue;
+        }
+
+        let Some(turn_text) = queued else { continue };
+
+        let (turn_text, attached) = crate::mentions::expand(&agent.tool_context, &turn_text);
+        if !attached.is_empty() {
+            let list: Vec<String> = attached
+                .iter()
+                .map(|item| format!("@{} ({}, {})", item.mention, item.kind, item.summary))
+                .collect();
+            println!("{}attached {}{}", theme.dim, list.join(" · "), theme.reset());
+            println!();
         }
 
         // A model turn.
         CANCEL.store(false, Ordering::Relaxed);
         let mut sink = ShellSink::new(theme, true, agent.config.detail);
-        if let Err(e) = agent.run_user_turn(input, &CANCEL, &mut sink) {
+        if let Err(e) = agent.run_user_turn(&turn_text, &CANCEL, &mut sink) {
             println!("{}odei: {e}{}", theme.warning, theme.reset());
         }
     }

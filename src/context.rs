@@ -90,6 +90,63 @@ pub fn system_prompt(config: &crate::config::Config) -> String {
     format!("{ROLE}{EVIDENCE}{CHANGES}{MACHINE}{STYLE}")
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NoteScope {
+    Project,
+    Global,
+}
+
+pub fn notes_path(workspace: &Path, scope: NoteScope) -> std::path::PathBuf {
+    match scope {
+        NoteScope::Project => workspace.join("AGENTS.md"),
+        NoteScope::Global => crate::config::odei_home().join("AGENTS.md"),
+    }
+}
+
+fn notes_header(workspace: &Path, scope: NoteScope) -> String {
+    match scope {
+        NoteScope::Project => {
+            let name = workspace
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "this project".to_string());
+            format!("# {name}\n\nInstructions for coding agents working in this repository.\n\n")
+        }
+        NoteScope::Global => {
+            "# Global instructions\n\nInstructions for odei in every workspace.\n\n".to_string()
+        }
+    }
+}
+
+pub fn remember(
+    workspace: &Path,
+    scope: NoteScope,
+    note: &str,
+) -> Result<std::path::PathBuf, String> {
+    let note: String = note
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if note.is_empty() {
+        return Err("nothing to remember".into());
+    }
+    let path = notes_path(workspace, scope);
+    let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+    if text.trim().is_empty() {
+        text = notes_header(workspace, scope);
+    } else if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!("- {note}\n"));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
 fn git(workspace: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git").arg("-C").arg(workspace).args(args).output().ok()?;
     if !out.status.success() {
@@ -170,4 +227,32 @@ pub fn runtime_context(workspace: &Path) -> String {
 
     context.push_str(&project_instructions(workspace));
     context
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_remembered_note_lands_in_agents_md_and_is_read_back_as_an_instruction() {
+        let dir = std::env::temp_dir().join(format!("odei-test-remember-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = remember(&dir, NoteScope::Project, "always use pnpm here").unwrap();
+        assert_eq!(path, dir.join("AGENTS.md"));
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.starts_with('#'), "{written}");
+        assert!(written.ends_with("- always use pnpm here\n"), "{written}");
+
+        remember(&dir, NoteScope::Project, "tests live in tests/\nnot in src/").unwrap();
+        let appended = std::fs::read_to_string(&path).unwrap();
+        assert!(appended.contains("- always use pnpm here\n"), "{appended}");
+        assert!(appended.ends_with("- tests live in tests/ not in src/\n"), "{appended}");
+
+        assert!(project_instructions(&dir).contains("always use pnpm here"));
+        assert!(remember(&dir, NoteScope::Project, "  \n ").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
