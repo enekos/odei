@@ -1,10 +1,11 @@
 # odei
 
-**Tiny native coding agent for the terminal, powered by Kimi.**
+**Tiny native coding agent for the terminal, powered by Kimi or Gemini.**
 
 `odei` (Basque: the storm spirit, one of Mari's weather forms) is a single-binary coding agent.
 It reads and edits files, runs commands, and searches the web from your shell — no editor
-integration, no daemon, no account beyond a Kimi Coding-plan key. 2.5 MiB, no runtime deps.
+integration, no daemon, no account beyond a Kimi Coding-plan key (or a Gemini API key). 2.5 MiB,
+no runtime deps.
 
 Its output style aims to be closer to a Unix shell than a heavy "IDE in the terminal" TUI.
 
@@ -65,6 +66,19 @@ odei setup          # stores the key in ~/.odei/config.json (0600)
 # or:
 export KIMI_API_KEY=sk-...
 ```
+
+For Gemini, create a key in [Google AI Studio](https://aistudio.google.com/apikey), then:
+
+```bash
+odei setup gemini   # stores the key alongside the Kimi one
+# or:
+export GEMINI_API_KEY=AI...
+export ODEI_MODEL=gemini-2.5-flash
+```
+
+The provider follows the model id: any `gemini-*` model talks to the Gemini API, everything
+else to Kimi. `ODEI_PROVIDER=kimi|gemini` overrides the inference for proxies with
+unrecognizable model ids.
 
 Verify with `odei doctor` — it checks the key, the profile directory, and live connectivity.
 
@@ -216,8 +230,12 @@ everything sensitive) and `/permissions yolo` (approve nothing).
 | `k3` | 1M context (Moderato+) |
 | `k3-256k` | 256k context (Moderato+) |
 | `kimi-for-coding-highspeed` | high-speed variant (Allegretto+) |
+| `gemini-2.5-flash` | Gemini default (GEMINI_API_KEY) |
+| `gemini-flash-latest` | newest Gemini Flash (GEMINI_API_KEY) |
+| `gemini-pro-latest` | newest Gemini Pro (GEMINI_API_KEY) |
 
-Switch at runtime with `/model k3`, or persistently via `ODEI_MODEL`.
+Switch at runtime with `/model k3` — switching to a `gemini-*` model switches provider, key,
+and base url with it — or persistently via `ODEI_MODEL`.
 
 ## Tools
 

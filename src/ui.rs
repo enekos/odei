@@ -585,7 +585,7 @@ const HELP: &[(&str, &str)] = &[
     ("/detail [level]", "collapsed, normal, or expanded — and remember it"),
     ("/compact", "summarize older turns to free up context"),
     ("/copy", "put my last reply on the clipboard"),
-    ("/setup", "store a Kimi API key"),
+    ("/setup", "store an API key"),
     ("/splash", "watch the wordmark condense again"),
     ("/version", "print the version"),
     ("/quit", "leave"),
@@ -912,7 +912,7 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
     splash(theme, &agent);
     if agent.config.api_key.is_none() {
         println!(
-            "{}No API key found. Run /setup or set KIMI_API_KEY.{}",
+            "{}No API key found. Run /setup or set KIMI_API_KEY (GEMINI_API_KEY for Gemini).{}",
             theme.warning,
             theme.reset()
         );
@@ -1091,11 +1091,16 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                             .find(|(id, _)| id.contains(arg))
                             .map(|(id, _)| id.to_string())
                             .unwrap_or_else(|| arg.to_string());
-                        agent.config.model = chosen.clone();
+                        agent.config.apply_model(&chosen);
                         let mut stored = crate::config::load_stored();
                         stored.model = Some(chosen.clone());
                         let _ = crate::config::save_stored(&stored);
-                        println!("{}model set to {chosen}{}", theme.dim, theme.reset());
+                        println!(
+                            "{}model set to {chosen} ({}){}",
+                            theme.dim,
+                            agent.config.provider.label(),
+                            theme.reset()
+                        );
                     }
                 }
                 "models" => {
@@ -1263,7 +1268,7 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                     None => println!("{}nothing to copy yet{}", theme.dim, theme.reset()),
                 },
                 "setup" => {
-                    if let Err(e) = crate::cli::setup_flow() {
+                    if let Err(e) = crate::cli::setup_flow((!arg.is_empty()).then_some(arg)) {
                         println!("{}setup failed: {e}{}", theme.warning, theme.reset());
                     } else {
                         agent.config = Config::load(&agent.config.workspace_root);

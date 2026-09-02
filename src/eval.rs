@@ -622,7 +622,7 @@ pub fn run(config: Config, args: &[String]) -> i32 {
         return 0;
     }
     if config.api_key.is_none() {
-        eprintln!("odei eval: no API key configured; run `odei setup` or set KIMI_API_KEY");
+        eprintln!("odei eval: {}", crate::provider::MISSING_KEY_HINT);
         return 1;
     }
 
@@ -753,6 +753,7 @@ mod tests {
         Config {
             api_key: None,
             key_source: "test",
+            provider: crate::config::Provider::Kimi,
             model: "kimi-for-coding".into(),
             base_url: "http://localhost".into(),
             permission_mode: PermissionMode::Auto,

@@ -160,10 +160,7 @@ fn report_failure(format: OutputFormat, message: &str) -> i32 {
 
 pub fn ask(config: Config, prompt: &str, format: OutputFormat) -> i32 {
     if config.api_key.is_none() {
-        return report_failure(
-            format,
-            "no API key configured; run `odei setup` or set KIMI_API_KEY",
-        );
+        return report_failure(format, crate::provider::MISSING_KEY_HINT);
     }
     ui::install_sigint_handler();
     let model = config.model.clone();
@@ -209,9 +206,22 @@ pub fn ask(config: Config, prompt: &str, format: OutputFormat) -> i32 {
     }
 }
 
-pub fn setup_flow() -> Result<(), String> {
-    println!("Set up Kimi Code access.");
-    println!("Create an API key in the Kimi Code Console (kimi.com/code), then paste it here.");
+pub fn setup_flow(provider: Option<&str>) -> Result<(), String> {
+    let provider = match provider {
+        None => crate::config::Provider::Kimi,
+        Some(name) => crate::config::Provider::parse(name)
+            .ok_or_else(|| format!("unknown provider: {name} (kimi or gemini)"))?,
+    };
+    match provider {
+        crate::config::Provider::Kimi => {
+            println!("Set up Kimi Code access.");
+            println!("Create an API key in the Kimi Code Console (kimi.com/code), then paste it here.");
+        }
+        crate::config::Provider::Gemini => {
+            println!("Set up Gemini access.");
+            println!("Create an API key in Google AI Studio (aistudio.google.com/apikey), then paste it here.");
+        }
+    }
     print!("API key: ");
     let _ = std::io::stdout().flush();
     let mut key = String::new();
@@ -221,7 +231,10 @@ pub fn setup_flow() -> Result<(), String> {
         return Err("no key entered".into());
     }
     let mut stored = crate::config::load_stored();
-    stored.api_key = Some(key);
+    match provider {
+        crate::config::Provider::Kimi => stored.api_key = Some(key),
+        crate::config::Provider::Gemini => stored.gemini_api_key = Some(key),
+    }
     crate::config::save_stored(&stored).map_err(|e| e.to_string())?;
     println!("Saved to {}", crate::config::odei_home().join("config.json").display());
     Ok(())
@@ -230,6 +243,7 @@ pub fn setup_flow() -> Result<(), String> {
 pub fn status(config: &Config) -> i32 {
     println!("odei {}", env!("CARGO_PKG_VERSION"));
     println!("workspace   {}", config.workspace_root.display());
+    println!("provider    {}", config.provider.label());
     println!("model       {}", config.model);
     println!("base url    {}", config.base_url);
     println!("key source  {}", config.key_source);
@@ -257,12 +271,13 @@ pub fn doctor(config: &Config) -> i32 {
     );
     failures += check(config.workspace_root.exists(), "workspace", &config.workspace_root.display().to_string());
     if config.api_key.is_some() {
+        let label = format!("{} connectivity", config.provider.label());
         match crate::provider::check_connectivity(config) {
             Ok(()) => {
-                failures += check(true, "kimi connectivity", &config.base_url);
+                failures += check(true, &label, &config.base_url);
             }
             Err(e) => {
-                failures += check(false, "kimi connectivity", &e.to_string());
+                failures += check(false, &label, &e.to_string());
             }
         }
     }
@@ -366,7 +381,7 @@ pub fn sessions() -> i32 {
 }
 
 pub fn help() -> i32 {
-    println!("odei — tiny native coding agent for the terminal, powered by Kimi");
+    println!("odei — tiny native coding agent for the terminal, powered by Kimi or Gemini");
     println!();
     println!("usage:");
     println!("  odei                       interactive session in the current workspace");
@@ -379,15 +394,15 @@ pub fn help() -> i32 {
     println!("  odei serve [--workspace <dir>] [--resume last|<id>]");
     println!("                             headless NDJSON agent on stdio (drives the macOS app)");
     println!("  odei eval [name…] [--list] run the behavioural evals in ./evals/cases");
-    println!("  odei setup                 store a Kimi Code API key");
+    println!("  odei setup [kimi|gemini]   store an API key (Kimi Code by default)");
     println!("  odei upgrade [--check]     update to the latest release");
     println!("  odei status                show runtime configuration");
     println!("  odei doctor                check configuration and connectivity");
     println!("  odei models                list known models");
     println!("  odei version               show the odei version");
     println!();
-    println!("environment: KIMI_API_KEY, ODEI_MODEL, ODEI_BASE_URL, ODEI_PERMISSIONS,");
-    println!("             ODEI_MAX_AGENT_STEPS, ODEI_PROMPT_CACHE, ODEI_SYSTEM_PROMPT_FILE,");
-    println!("             ODEI_EVAL_DIR");
+    println!("environment: KIMI_API_KEY, GEMINI_API_KEY, ODEI_PROVIDER, ODEI_MODEL,");
+    println!("             ODEI_BASE_URL, ODEI_PERMISSIONS, ODEI_MAX_AGENT_STEPS,");
+    println!("             ODEI_PROMPT_CACHE, ODEI_SYSTEM_PROMPT_FILE, ODEI_EVAL_DIR");
     0
 }

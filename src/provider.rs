@@ -92,18 +92,19 @@ pub enum ProviderError {
     Protocol(String),
 }
 
+pub const MISSING_KEY_HINT: &str =
+    "no API key configured; run `odei setup` or set KIMI_API_KEY (GEMINI_API_KEY for Gemini)";
+
 impl std::fmt::Display for ProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProviderError::MissingKey => {
-                write!(f, "no API key configured; run `odei setup` or set KIMI_API_KEY")
-            }
+            ProviderError::MissingKey => write!(f, "{MISSING_KEY_HINT}"),
             ProviderError::Cancelled => write!(f, "cancelled"),
             ProviderError::Http(status, body) => {
-                write!(f, "kimi request failed (HTTP {status}): {body}")
+                write!(f, "model request failed (HTTP {status}): {body}")
             }
             ProviderError::Transport(msg) => write!(f, "network failure: {msg}"),
-            ProviderError::Protocol(msg) => write!(f, "unexpected kimi response: {msg}"),
+            ProviderError::Protocol(msg) => write!(f, "unexpected model response: {msg}"),
         }
     }
 }
@@ -183,6 +184,9 @@ pub fn stream_turn(
     cancel: &AtomicBool,
     on_event: &mut dyn FnMut(StreamEvent),
 ) -> Result<TurnResult, ProviderError> {
+    if config.provider == crate::config::Provider::Gemini {
+        return crate::gemini::stream_turn(config, system, messages, tools, cancel, on_event);
+    }
     let key = config.api_key.as_deref().ok_or(ProviderError::MissingKey)?;
     let url = format!("{}/v1/messages", config.base_url);
 
@@ -390,6 +394,9 @@ pub fn complete(
 
 /// Non-streaming utility request used by `odei doctor` for connectivity checks.
 pub fn check_connectivity(config: &Config) -> Result<(), ProviderError> {
+    if config.provider == crate::config::Provider::Gemini {
+        return crate::gemini::check_connectivity(config);
+    }
     let key = config.api_key.as_deref().ok_or(ProviderError::MissingKey)?;
     let url = format!("{}/v1/messages", config.base_url);
     let body = json!({
@@ -423,6 +430,7 @@ mod tests {
         Config {
             api_key: Some("test".into()),
             key_source: "test",
+            provider: crate::config::Provider::Kimi,
             model: "kimi-for-coding".into(),
             base_url: "http://localhost".into(),
             permission_mode: PermissionMode::Auto,
