@@ -1,17 +1,74 @@
 //! Profile config under ~/.odei: config.json, sessions/, usage.jsonl.
-//! The API key comes from `odei setup`, KIMI_API_KEY, or ODEI_API_KEY.
+//! The API key comes from `odei setup`, KIMI_API_KEY / GEMINI_API_KEY, or
+//! ODEI_API_KEY.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_BASE_URL: &str = "https://api.kimi.com/coding";
 pub const DEFAULT_MODEL: &str = "kimi-for-coding";
+pub const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com";
+pub const GEMINI_DEFAULT_MODEL: &str = "gemini-2.5-flash";
 pub const KNOWN_MODELS: &[(&str, &str)] = &[
     ("kimi-for-coding", "default coding model, all plans"),
     ("k3", "K3, 1M context (Moderato+)"),
     ("k3-256k", "K3, 256k context (Moderato+)"),
     ("kimi-for-coding-highspeed", "high-speed variant (Allegretto+)"),
+    ("gemini-2.5-flash", "Gemini 2.5 Flash (GEMINI_API_KEY)"),
+    ("gemini-flash-latest", "newest Gemini Flash (GEMINI_API_KEY)"),
+    ("gemini-pro-latest", "newest Gemini Pro (GEMINI_API_KEY)"),
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    Kimi,
+    Gemini,
+}
+
+impl Provider {
+    pub fn label(self) -> &'static str {
+        match self {
+            Provider::Kimi => "kimi",
+            Provider::Gemini => "gemini",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "kimi" => Some(Provider::Kimi),
+            "gemini" | "google" => Some(Provider::Gemini),
+            _ => None,
+        }
+    }
+
+    /// The model id names the provider for every model odei knows about;
+    /// ODEI_PROVIDER exists for base-url overrides pointing at proxies whose
+    /// model ids follow neither family.
+    pub fn infer(model: &str) -> Option<Self> {
+        if model.starts_with("gemini") {
+            Some(Provider::Gemini)
+        } else if model.starts_with("kimi") || model.starts_with("k3") {
+            Some(Provider::Kimi)
+        } else {
+            None
+        }
+    }
+
+    pub fn default_model(self) -> &'static str {
+        match self {
+            Provider::Kimi => DEFAULT_MODEL,
+            Provider::Gemini => GEMINI_DEFAULT_MODEL,
+        }
+    }
+
+    pub fn default_base_url(self) -> &'static str {
+        match self {
+            Provider::Kimi => DEFAULT_BASE_URL,
+            Provider::Gemini => GEMINI_BASE_URL,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -120,6 +177,8 @@ pub struct StoredConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub gemini_api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
@@ -135,6 +194,7 @@ pub struct StoredConfig {
 pub struct Config {
     pub api_key: Option<String>,
     pub key_source: &'static str,
+    pub provider: Provider,
     pub model: String,
     pub base_url: String,
     pub permission_mode: PermissionMode,
@@ -187,29 +247,61 @@ pub fn save_stored(stored: &StoredConfig) -> std::io::Result<()> {
     Ok(())
 }
 
+fn resolve_provider(model: Option<&str>, stored_model: Option<&str>) -> Provider {
+    std::env::var("ODEI_PROVIDER")
+        .ok()
+        .and_then(|v| Provider::parse(&v))
+        .or_else(|| model.and_then(Provider::infer))
+        .or_else(|| stored_model.and_then(Provider::infer))
+        .unwrap_or(Provider::Kimi)
+}
+
+fn resolve_key(provider: Provider, stored: &StoredConfig) -> (Option<String>, &'static str) {
+    match provider {
+        Provider::Kimi => {
+            if let Ok(k) = std::env::var("KIMI_API_KEY") {
+                (Some(k), "KIMI_API_KEY")
+            } else if let Ok(k) = std::env::var("ODEI_API_KEY") {
+                (Some(k), "ODEI_API_KEY")
+            } else if stored.api_key.is_some() {
+                (stored.api_key.clone(), "config (odei setup)")
+            } else {
+                (None, "missing")
+            }
+        }
+        Provider::Gemini => {
+            if let Ok(k) = std::env::var("GEMINI_API_KEY") {
+                (Some(k), "GEMINI_API_KEY")
+            } else if let Ok(k) = std::env::var("ODEI_API_KEY") {
+                (Some(k), "ODEI_API_KEY")
+            } else if stored.gemini_api_key.is_some() {
+                (stored.gemini_api_key.clone(), "config (odei setup gemini)")
+            } else {
+                (None, "missing")
+            }
+        }
+    }
+}
+
+fn resolve_base_url(provider: Provider, stored: &StoredConfig) -> String {
+    std::env::var("ODEI_BASE_URL")
+        .ok()
+        .or_else(|| stored.base_url.clone())
+        .unwrap_or_else(|| provider.default_base_url().to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
 impl Config {
     pub fn load(workspace_root: &Path) -> Config {
         let stored = load_stored();
-        let (api_key, key_source) = if let Ok(k) = std::env::var("KIMI_API_KEY") {
-            (Some(k), "KIMI_API_KEY")
-        } else if let Ok(k) = std::env::var("ODEI_API_KEY") {
-            (Some(k), "ODEI_API_KEY")
-        } else if stored.api_key.is_some() {
-            (stored.api_key.clone(), "config (odei setup)")
-        } else {
-            (None, "missing")
-        };
-
-        let model = std::env::var("ODEI_MODEL")
-            .ok()
+        let env_model = std::env::var("ODEI_MODEL").ok();
+        let provider = resolve_provider(env_model.as_deref(), stored.model.as_deref());
+        let model = env_model
             .or_else(|| stored.model.clone())
-            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
-
-        let base_url = std::env::var("ODEI_BASE_URL")
-            .ok()
-            .or_else(|| stored.base_url.clone())
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-        let base_url = base_url.trim_end_matches('/').to_string();
+            .unwrap_or_else(|| provider.default_model().to_string());
+        let (api_key, key_source) = resolve_key(provider, &stored);
+        let base_url = resolve_base_url(provider, &stored);
 
         let permission_mode = std::env::var("ODEI_PERMISSIONS")
             .ok()
@@ -240,6 +332,7 @@ impl Config {
         Config {
             api_key,
             key_source,
+            provider,
             model,
             base_url,
             permission_mode,
@@ -251,19 +344,38 @@ impl Config {
         }
     }
 
+    /// Switching the model can switch the provider, and with it the key and
+    /// the base url — `/model gemini-2.5-flash` mid-session must not keep
+    /// talking to Kimi.
+    pub fn apply_model(&mut self, model: &str) {
+        self.model = model.to_string();
+        let stored = load_stored();
+        let provider = resolve_provider(Some(model), None);
+        if provider != self.provider {
+            self.provider = provider;
+            let (api_key, key_source) = resolve_key(provider, &stored);
+            self.api_key = api_key;
+            self.key_source = key_source;
+            self.base_url = resolve_base_url(provider, &stored);
+        }
+    }
+
     /// Output ceiling for one turn. Kept well under the window so a long
     /// transcript plus a long answer still fits.
     pub fn max_tokens(&self) -> u64 {
-        match self.model.as_str() {
-            "k3" | "k3-256k" => 65_536,
-            _ => 32_768,
+        match self.provider {
+            Provider::Gemini => 65_536,
+            Provider::Kimi => match self.model.as_str() {
+                "k3" | "k3-256k" => 65_536,
+                _ => 32_768,
+            },
         }
     }
 
     pub fn context_window(&self) -> u64 {
-        match self.model.as_str() {
-            "k3" => 1_048_576,
-            "k3-256k" | "kimi-for-coding" | "kimi-for-coding-highspeed" => 262_144,
+        match (self.provider, self.model.as_str()) {
+            (Provider::Gemini, _) => 1_048_576,
+            (Provider::Kimi, "k3") => 1_048_576,
             _ => 262_144,
         }
     }

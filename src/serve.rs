@@ -281,7 +281,7 @@ pub fn serve(mut config: Config, workspace: Option<String>, resume: Option<Strin
     if config.api_key.is_none() {
         emit(json!({
             "event": "fatal",
-            "text": "no API key configured; run `odei setup` or set KIMI_API_KEY",
+            "text": crate::provider::MISSING_KEY_HINT,
         }));
         return 1;
     }

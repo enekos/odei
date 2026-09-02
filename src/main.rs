@@ -1,5 +1,6 @@
 //! odei — tiny, native coding agent for the terminal, powered by the
-//! Kimi Code subscription API (https://api.kimi.com/coding).
+//! Kimi Code subscription API (https://api.kimi.com/coding) or the
+//! Gemini API (https://generativelanguage.googleapis.com).
 
 mod activity;
 mod agent;
@@ -13,6 +14,7 @@ mod config;
 mod context;
 mod diff;
 mod eval;
+mod gemini;
 mod inspect;
 mod markdown;
 mod mentions;
@@ -74,7 +76,7 @@ fn main() {
             serve::serve(config, flag("--workspace"), flag("--resume"))
         }
         Some("eval") => eval::run(config, &args[1..]),
-        Some("setup") => match cli::setup_flow() {
+        Some("setup") => match cli::setup_flow(args.get(1).map(String::as_str)) {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("odei: {e}");
