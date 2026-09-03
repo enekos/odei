@@ -346,8 +346,10 @@ fn find_closer(cs: &Chars, from: usize, ch: char, k: usize) -> Option<usize> {
         if c == ch {
             let m = run(cs, j, ch);
             let tight = j > from && !cs[j - 1].1.is_whitespace();
-            let intraword =
-                ch == '_' && cs.get(j + m).is_some_and(|(_, n)| n.is_alphanumeric() || *n == '_');
+            let intraword = ch == '_'
+                && cs
+                    .get(j + m)
+                    .is_some_and(|(_, n)| n.is_alphanumeric() || *n == '_');
             if m >= k && tight && !intraword {
                 return Some(j);
             }
@@ -393,7 +395,9 @@ fn bracket_end(cs: &Chars, open: usize, close_ch: char) -> Option<usize> {
 }
 
 fn link_at(cs: &Chars, bracket: usize, image: bool) -> Span {
-    let Some(close) = bracket_end(cs, bracket, ']') else { return Span::Hold };
+    let Some(close) = bracket_end(cs, bracket, ']') else {
+        return Span::Hold;
+    };
     match cs.get(close + 1).map(|(_, c)| *c) {
         Some('(') => {}
         // Nothing after `]` yet: a `(` may be the next character to arrive.
@@ -401,7 +405,9 @@ fn link_at(cs: &Chars, bracket: usize, image: bool) -> Span {
         None => return Span::Hold,
         Some(_) => return Span::None,
     }
-    let Some(paren) = bracket_end(cs, close + 1, ')') else { return Span::Hold };
+    let Some(paren) = bracket_end(cs, close + 1, ')') else {
+        return Span::Hold;
+    };
     Span::Link {
         text: (bracket + 1, close),
         dest: (close + 2, paren),
@@ -417,7 +423,10 @@ fn auto_at(cs: &Chars, i: usize) -> Span {
         let c = cs[j].1;
         if c == '>' {
             return if scheme && j > i + 1 {
-                Span::Auto { dest: (i + 1, j), next: j + 1 }
+                Span::Auto {
+                    dest: (i + 1, j),
+                    next: j + 1,
+                }
             } else {
                 Span::None
             };
@@ -451,13 +460,19 @@ fn span_at(cs: &Chars, i: usize) -> Span {
     match c {
         '\\' => match cs.get(i + 1) {
             None => Span::Hold,
-            Some((_, d)) if is_md_punct(*d) => Span::Escape { ch: *d, next: i + 2 },
+            Some((_, d)) if is_md_punct(*d) => Span::Escape {
+                ch: *d,
+                next: i + 2,
+            },
             Some(_) => Span::None,
         },
         '`' => match code_end(cs, i) {
             Some(end) => {
                 let k = run(cs, i, '`');
-                Span::Code { content: (i + k, end), next: end + k }
+                Span::Code {
+                    content: (i + k, end),
+                    next: end + k,
+                }
             }
             None => Span::Hold,
         },
@@ -488,7 +503,13 @@ fn span_at(cs: &Chars, i: usize) -> Span {
                         (_, 2) => (true, false, false),
                         _ => (true, true, false),
                     };
-                    Span::Emph { content: (i + k, j), next: j + k, strong, em, strike }
+                    Span::Emph {
+                        content: (i + k, j),
+                        next: j + k,
+                        strong,
+                        em,
+                        strike,
+                    }
                 }
                 None => Span::Hold,
             }
@@ -520,11 +541,19 @@ fn inline(src: &str, flow: &mut Flow, out: &mut String) {
                 flow.close();
                 i = next;
             }
-            Span::Emph { content, next, strong, em, strike } => {
+            Span::Emph {
+                content,
+                next,
+                strong,
+                em,
+                strike,
+            } => {
                 let mut opened = 0;
-                for (on, style) in
-                    [(strong, theme.strong), (em, theme.emphasis), (strike, theme.strike)]
-                {
+                for (on, style) in [
+                    (strong, theme.strong),
+                    (em, theme.emphasis),
+                    (strike, theme.strike),
+                ] {
                     if on {
                         flow.open(style);
                         opened += 1;
@@ -536,9 +565,17 @@ fn inline(src: &str, flow: &mut Flow, out: &mut String) {
                 }
                 i = next;
             }
-            Span::Link { text, dest, next, image } => {
+            Span::Link {
+                text,
+                dest,
+                next,
+                image,
+            } => {
                 let label = slice(src, &cs, text);
-                let url = slice(src, &cs, dest).split_whitespace().next().unwrap_or("");
+                let url = slice(src, &cs, dest)
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("");
                 let url = url.trim_start_matches('<').trim_end_matches('>');
                 flow.open(if image { theme.dim } else { theme.link });
                 if label.is_empty() {
@@ -550,10 +587,8 @@ fn inline(src: &str, flow: &mut Flow, out: &mut String) {
                 // The destination is kept — a terminal link you cannot copy
                 // is worse than one you can see. Anchors and self-links add
                 // nothing, so they stay out.
-                let worth_showing = !url.is_empty()
-                    && !url.starts_with('#')
-                    && url != label
-                    && !label.is_empty();
+                let worth_showing =
+                    !url.is_empty() && !url.starts_with('#') && url != label && !label.is_empty();
                 if worth_showing {
                     flow.brk(out);
                     flow.open(theme.dim);
@@ -644,16 +679,28 @@ enum Align {
 /// The shape of one source line.
 enum Kind {
     Blank,
-    Fence { ch: char, len: usize, lang: String },
+    Fence {
+        ch: char,
+        len: usize,
+        lang: String,
+    },
     Rule,
     Heading(usize),
     Quote(usize),
-    Bullet { indent: usize, task: Option<bool> },
-    Ordered { indent: usize, marker: String },
+    Bullet {
+        indent: usize,
+        task: Option<bool>,
+    },
+    Ordered {
+        indent: usize,
+        marker: String,
+    },
     /// Possibly a table row — settled by whether the next line is a
     /// delimiter.
     Row,
-    Para { indent: usize },
+    Para {
+        indent: usize,
+    },
 }
 
 /// Classify a line. With `partial` set the line is still arriving, and `None`
@@ -681,7 +728,14 @@ fn classify(line: &str, partial: bool, rows: bool) -> Option<(Kind, usize)> {
         let len = trimmed.chars().take_while(|c| *c == first).count();
         if len >= 3 {
             let lang = trimmed[len..].trim().to_string();
-            return Some((Kind::Fence { ch: first, len, lang }, 0));
+            return Some((
+                Kind::Fence {
+                    ch: first,
+                    len,
+                    lang,
+                },
+                0,
+            ));
         }
     }
 
@@ -892,15 +946,23 @@ fn cell_lines(src: &str, width: usize, theme: &Theme, header: bool) -> Vec<(Stri
     }
     inline(src, &mut flow, &mut out);
     flow.flush(&mut out);
-    out.split('\n').map(|line| (line.to_string(), visible_width(line))).collect()
+    out.split('\n')
+        .map(|line| (line.to_string(), visible_width(line)))
+        .collect()
 }
 
 // ---------------------------------------------------------------- renderer
 
 enum Block {
     Text,
-    Fence { ch: char, len: usize },
-    Table { align: Vec<Align>, rows: Vec<Vec<String>> },
+    Fence {
+        ch: char,
+        len: usize,
+    },
+    Table {
+        align: Vec<Align>,
+        rows: Vec<Vec<String>>,
+    },
 }
 
 enum Open<'t> {
@@ -1100,7 +1162,9 @@ impl<'t> Renderer<'t> {
                     if self.header.is_some() {
                         return;
                     }
-                    let Some((kind, offset)) = classify(&self.buf, true, true) else { return };
+                    let Some((kind, offset)) = classify(&self.buf, true, true) else {
+                        return;
+                    };
                     self.begin(&kind, out);
                     self.buf.drain(..offset);
                 }
@@ -1114,7 +1178,9 @@ impl<'t> Renderer<'t> {
     /// paragraph, anything else ends it.
     fn resolve_soft(&mut self, partial: bool, out: &mut String) -> bool {
         let tail = self.buf[self.soft_at..].to_string();
-        let Some((kind, _)) = classify(&tail, partial, true) else { return false };
+        let Some((kind, _)) = classify(&tail, partial, true) else {
+            return false;
+        };
         self.soft = false;
         if matches!(kind, Kind::Para { .. }) {
             self.stream(out);
@@ -1160,7 +1226,11 @@ impl<'t> Renderer<'t> {
         self.open = match kind {
             Kind::Heading(level) => {
                 let mut flow = Flow::new(theme, self.measure);
-                flow.base(if *level <= 2 { theme.heading } else { theme.strong });
+                flow.base(if *level <= 2 {
+                    theme.heading
+                } else {
+                    theme.strong
+                });
                 Open::Prose(flow)
             }
             Kind::Quote(depth) => {
@@ -1197,7 +1267,12 @@ impl<'t> Renderer<'t> {
                 out.push_str(theme.reset());
                 out.push(' ');
                 let width = indent + display_width(marker) + 1;
-                Open::Prose(Flow::with_lead(theme, self.measure, " ".repeat(width), width))
+                Open::Prose(Flow::with_lead(
+                    theme,
+                    self.measure,
+                    " ".repeat(width),
+                    width,
+                ))
             }
             Kind::Para { indent } => {
                 let pad = " ".repeat(*indent);
@@ -1296,7 +1371,10 @@ impl<'t> Renderer<'t> {
     fn text_line(&mut self, line: &str, out: &mut String) {
         if let Some(header) = self.header.take() {
             if let Some(align) = delimiter(line) {
-                self.block = Block::Table { align, rows: vec![split_row(&header)] };
+                self.block = Block::Table {
+                    align,
+                    rows: vec![split_row(&header)],
+                };
                 return;
             }
             // Just a line with a pipe in it after all. It is an ordinary
@@ -1316,7 +1394,9 @@ impl<'t> Renderer<'t> {
     }
 
     fn whole_line(&mut self, line: &str, rows: bool, out: &mut String) {
-        let Some((kind, offset)) = classify(line, false, rows) else { return };
+        let Some((kind, offset)) = classify(line, false, rows) else {
+            return;
+        };
         match kind {
             Kind::Blank => self.blank = true,
             Kind::Fence { ch, len, lang } => {
@@ -1382,9 +1462,7 @@ impl<'t> Renderer<'t> {
     }
 
     fn flush_table(&mut self, out: &mut String) {
-        let Block::Table { align, rows } =
-            std::mem::replace(&mut self.block, Block::Text)
-        else {
+        let Block::Table { align, rows } = std::mem::replace(&mut self.block, Block::Text) else {
             return;
         };
         if rows.is_empty() {
@@ -1479,7 +1557,11 @@ impl<'t> Renderer<'t> {
 }
 
 fn term_width() -> usize {
-    crossterm::terminal::size().ok().map(|(w, _)| w as usize).filter(|w| *w >= 20).unwrap_or(80)
+    crossterm::terminal::size()
+        .ok()
+        .map(|(w, _)| w as usize)
+        .filter(|w| *w >= 20)
+        .unwrap_or(80)
 }
 
 fn disabled_by_env() -> bool {
@@ -1558,7 +1640,10 @@ mod tests {
 
     #[test]
     fn links_keep_their_destination() {
-        assert_eq!(seen("see [the docs](https://kimi.com) now\n"), "see the docs (https://kimi.com) now\n");
+        assert_eq!(
+            seen("see [the docs](https://kimi.com) now\n"),
+            "see the docs (https://kimi.com) now\n"
+        );
         // A bare autolink is not doubled up.
         assert_eq!(seen("<https://kimi.com>\n"), "https://kimi.com\n");
         assert_eq!(seen("[https://a.io](https://a.io)\n"), "https://a.io\n");
@@ -1654,7 +1739,11 @@ mod tests {
         let out = seen(src);
         let lines: Vec<&str> = out.trim_matches('\n').split('\n').collect();
         for line in &lines {
-            assert!(display_width(line) <= 59, "{line:?} ({}) in {out:?}", display_width(line));
+            assert!(
+                display_width(line) <= 59,
+                "{line:?} ({}) in {out:?}",
+                display_width(line)
+            );
         }
         assert!(lines.iter().all(|l| seps(l) == seps(lines[0])), "{out:?}");
         // Nothing was dropped in the folding.

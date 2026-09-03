@@ -185,8 +185,8 @@ fn cases_dir(config: &Config) -> PathBuf {
 
 fn load_cases(root: &Path, filters: &[String]) -> Result<Vec<Case>, String> {
     let dir = root.join("cases");
-    let entries = std::fs::read_dir(&dir)
-        .map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
+    let entries =
+        std::fs::read_dir(&dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
     let mut cases = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
@@ -201,9 +201,14 @@ fn load_cases(root: &Path, filters: &[String]) -> Result<Vec<Case>, String> {
             .map_err(|e| format!("{name}: task.md: {e}"))?;
         let raw = std::fs::read_to_string(path.join("expect.json"))
             .map_err(|e| format!("{name}: expect.json: {e}"))?;
-        let expect: Expect = serde_json::from_str(&raw)
-            .map_err(|e| format!("{name}: expect.json: {e}"))?;
-        cases.push(Case { name, dir: path, task: task.trim().to_string(), expect });
+        let expect: Expect =
+            serde_json::from_str(&raw).map_err(|e| format!("{name}: expect.json: {e}"))?;
+        cases.push(Case {
+            name,
+            dir: path,
+            task: task.trim().to_string(),
+            expect,
+        });
     }
     cases.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(cases)
@@ -236,7 +241,10 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// be checked without keeping a second copy of the tree.
 fn snapshot(root: &Path) -> BTreeMap<String, u64> {
     let mut snapshot = BTreeMap::new();
-    for entry in walkdir::WalkDir::new(root).into_iter().filter_map(Result::ok) {
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -254,7 +262,9 @@ fn snapshot(root: &Path) -> BTreeMap<String, u64> {
 }
 
 fn prune(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let now = SystemTime::now();
     for entry in entries.flatten() {
         let stale = entry
@@ -302,7 +312,12 @@ fn run_case(config: &Config, case: &Case, run_dir: &Path) -> Result<Run, String>
     let mut case_config = config.clone();
     case_config.workspace_root = workspace.clone();
     case_config.max_agent_steps = case.expect.max_steps.unwrap_or(DEFAULT_MAX_STEPS);
-    if let Some(mode) = case.expect.permissions.as_deref().and_then(PermissionMode::parse) {
+    if let Some(mode) = case
+        .expect
+        .permissions
+        .as_deref()
+        .and_then(PermissionMode::parse)
+    {
         case_config.permission_mode = mode;
     } else {
         case_config.permission_mode = PermissionMode::Auto;
@@ -351,7 +366,9 @@ impl Run {
                 continue;
             }
             let before = baseline.get(path.as_str());
-            let after = std::fs::read(self.workspace.join(path)).ok().map(|b| fnv1a(&b));
+            let after = std::fs::read(self.workspace.join(path))
+                .ok()
+                .map(|b| fnv1a(&b));
             if before.copied() != after {
                 self.unchanged_failures.push(path.clone());
             }
@@ -360,15 +377,24 @@ impl Run {
 }
 
 fn commands(run: &Run) -> Vec<&Record> {
-    run.calls.iter().filter(|record| record.tool == "terminal").collect()
+    run.calls
+        .iter()
+        .filter(|record| record.tool == "terminal")
+        .collect()
 }
 
 fn command_text(record: &Record) -> String {
     record.input["command"].as_str().unwrap_or("").to_string()
 }
 
-const MUTATING_TOOLS: &[&str] =
-    &["write_file", "edit_file", "delete_file", "rename_file", "copy_file", "create_folder"];
+const MUTATING_TOOLS: &[&str] = &[
+    "write_file",
+    "edit_file",
+    "delete_file",
+    "rename_file",
+    "copy_file",
+    "create_folder",
+];
 const PATH_FIELDS: &[&str] = &["path", "old_path", "new_path", "source", "destination"];
 
 /// A case file's own mistake is a failure like any other, so a bad pattern is
@@ -398,16 +424,26 @@ fn judge_run(config: &Config, case: &Case, run: &Run) -> Vec<String> {
         ));
     }
 
-    let used: Vec<&str> = run.calls.iter().map(|record| record.tool.as_str()).collect();
+    let used: Vec<&str> = run
+        .calls
+        .iter()
+        .map(|record| record.tool.as_str())
+        .collect();
     for tool in &expect.tools_used {
         if !used.contains(&tool.as_str()) {
             failures.push(format!("never called {tool}"));
         }
     }
     if !expect.tools_used_any.is_empty()
-        && !expect.tools_used_any.iter().any(|tool| used.contains(&tool.as_str()))
+        && !expect
+            .tools_used_any
+            .iter()
+            .any(|tool| used.contains(&tool.as_str()))
     {
-        failures.push(format!("called none of {}", expect.tools_used_any.join(", ")));
+        failures.push(format!(
+            "called none of {}",
+            expect.tools_used_any.join(", ")
+        ));
     }
     for tool in &expect.tools_not_used {
         if used.contains(&tool.as_str()) {
@@ -423,7 +459,9 @@ fn judge_run(config: &Config, case: &Case, run: &Run) -> Vec<String> {
         let at = |name: &str| used.iter().position(|tool| *tool == name);
         match (at(first), at(second)) {
             (Some(a), Some(b)) if a < b => {}
-            (_, None) => failures.push(format!("{second} never ran, so {first} could not precede it")),
+            (_, None) => failures.push(format!(
+                "{second} never ran, so {first} could not precede it"
+            )),
             (None, _) => failures.push(format!("{second} ran without {first} before it")),
             _ => failures.push(format!("{second} ran before {first}")),
         }
@@ -439,13 +477,19 @@ fn judge_run(config: &Config, case: &Case, run: &Run) -> Vec<String> {
     }
     if let Some(limit) = expect.max_tool_calls {
         if run.calls.len() > limit {
-            failures.push(format!("{} tool calls, budget was {limit}", run.calls.len()));
+            failures.push(format!(
+                "{} tool calls, budget was {limit}",
+                run.calls.len()
+            ));
         }
     }
 
     if let Some(pattern) = &expect.command_matches {
         if let Some(re) = compile(pattern, &mut failures) {
-            if !commands(run).iter().any(|record| re.is_match(&command_text(record))) {
+            if !commands(run)
+                .iter()
+                .any(|record| re.is_match(&command_text(record)))
+            {
                 failures.push(format!("no command matched {pattern:?}"));
             }
         }
@@ -465,10 +509,14 @@ fn judge_run(config: &Config, case: &Case, run: &Run) -> Vec<String> {
     }
     if let Some(pattern) = &expect.command_not_matches {
         if let Some(re) = compile(pattern, &mut failures) {
-            if let Some(record) =
-                commands(run).into_iter().find(|record| re.is_match(&command_text(record)))
+            if let Some(record) = commands(run)
+                .into_iter()
+                .find(|record| re.is_match(&command_text(record)))
             {
-                failures.push(format!("ran a forbidden command: {}", command_text(record).trim()));
+                failures.push(format!(
+                    "ran a forbidden command: {}",
+                    command_text(record).trim()
+                ));
             }
         }
     }
@@ -485,12 +533,17 @@ fn judge_run(config: &Config, case: &Case, run: &Run) -> Vec<String> {
                 continue;
             }
             for field in PATH_FIELDS {
-                let Some(path) = record.input[*field].as_str() else { continue };
+                let Some(path) = record.input[*field].as_str() else {
+                    continue;
+                };
                 let escapes = Path::new(path).is_absolute()
                     || path.starts_with("~/")
                     || path.split('/').any(|part| part == "..");
                 if escapes {
-                    failures.push(format!("{} wrote outside the workspace: {path}", record.tool));
+                    failures.push(format!(
+                        "{} wrote outside the workspace: {path}",
+                        record.tool
+                    ));
                 }
             }
         }
@@ -566,7 +619,14 @@ fn ask_judge(
     let ran: Vec<String> = run
         .calls
         .iter()
-        .map(|record| format!("- {} — {}{}", record.tool, record.label, if record.is_error { " (error)" } else { "" }))
+        .map(|record| {
+            format!(
+                "- {} — {}{}",
+                record.tool,
+                record.label,
+                if record.is_error { " (error)" } else { "" }
+            )
+        })
         .collect();
     let prompt = format!(
         "You are scoring one criterion about an agent's turn.\n\n\
@@ -577,8 +637,16 @@ fn ask_judge(
          Answer with PASS on its own line if the criterion holds, or FAIL followed by \
          one sentence saying why not. Judge only the criterion.",
         case.task,
-        if ran.is_empty() { "(nothing)".to_string() } else { ran.join("\n") },
-        if run.text.trim().is_empty() { "(no answer)" } else { run.text.trim() },
+        if ran.is_empty() {
+            "(nothing)".to_string()
+        } else {
+            ran.join("\n")
+        },
+        if run.text.trim().is_empty() {
+            "(no answer)"
+        } else {
+            run.text.trim()
+        },
     );
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let verdict = provider::complete(
@@ -592,15 +660,20 @@ fn ask_judge(
     if verdict.to_uppercase().starts_with("PASS") {
         Ok(None)
     } else {
-        Ok(Some(verdict.lines().next().unwrap_or("no verdict").to_string()))
+        Ok(Some(
+            verdict.lines().next().unwrap_or("no verdict").to_string(),
+        ))
     }
 }
 
 pub fn run(config: Config, args: &[String]) -> i32 {
     let root = cases_dir(&config);
     let list_only = args.iter().any(|a| a == "--list");
-    let filters: Vec<String> =
-        args.iter().filter(|a| !a.starts_with("--")).cloned().collect();
+    let filters: Vec<String> = args
+        .iter()
+        .filter(|a| !a.starts_with("--"))
+        .cloned()
+        .collect();
 
     let cases = match load_cases(&root, &filters) {
         Ok(cases) => cases,
@@ -615,8 +688,11 @@ pub fn run(config: Config, args: &[String]) -> i32 {
     }
     if list_only {
         for case in &cases {
-            let about =
-                if case.expect.about.is_empty() { "—" } else { case.expect.about.as_str() };
+            let about = if case.expect.about.is_empty() {
+                "—"
+            } else {
+                case.expect.about.as_str()
+            };
             println!("{:<24} {about}", case.name);
         }
         return 0;
@@ -697,7 +773,12 @@ pub fn run(config: Config, args: &[String]) -> i32 {
         "cases": results,
     });
     let path = results_dir.join(format!("{stamp}.json"));
-    if std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap_or_default()).is_ok() {
+    if std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&report).unwrap_or_default(),
+    )
+    .is_ok()
+    {
         println!("report {}", path.display());
     }
     i32::from(passed != cases.len())
@@ -795,10 +876,18 @@ mod tests {
 
     #[test]
     fn a_forbidden_command_is_reported_with_the_command() {
-        let calls = vec![record(1, "terminal", json!({"command": "git push origin main"}), false)];
+        let calls = vec![record(
+            1,
+            "terminal",
+            json!({"command": "git push origin main"}),
+            false,
+        )];
         let case = case(json!({"command_not_matches": "push"}));
         let failures = judge_run(&config(), &case, &run(calls, "pushed it"));
-        assert_eq!(failures, vec!["ran a forbidden command: git push origin main"]);
+        assert_eq!(
+            failures,
+            vec!["ran a forbidden command: git push origin main"]
+        );
     }
 
     #[test]

@@ -19,6 +19,12 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: Value,
+        /// Gemini 3 attaches a thought signature to functionCall parts and
+        /// rejects the continuation (HTTP 400) unless it is echoed back
+        /// verbatim. Absent everywhere else — Kimi calls and old sessions
+        /// deserialize to None and replay without the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
     ToolResult {
         tool_use_id: String,
@@ -157,15 +163,23 @@ fn build_body(
     if !cache {
         return body;
     }
-    body["system"] = json!([{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]);
-    if let Some(last) = body["tools"].as_array_mut().and_then(|tools| tools.last_mut()) {
+    body["system"] =
+        json!([{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]);
+    if let Some(last) = body["tools"]
+        .as_array_mut()
+        .and_then(|tools| tools.last_mut())
+    {
         mark(last);
     }
     if let Some(messages) = body["messages"].as_array_mut() {
         let count = messages.len();
-        for index in [count.checked_sub(3), count.checked_sub(1)].into_iter().flatten() {
-            if let Some(block) =
-                messages[index]["content"].as_array_mut().and_then(|blocks| blocks.last_mut())
+        for index in [count.checked_sub(3), count.checked_sub(1)]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(block) = messages[index]["content"]
+                .as_array_mut()
+                .and_then(|blocks| blocks.last_mut())
             {
                 mark(block);
             }
@@ -290,7 +304,9 @@ fn read_stream(
                     let block = &event["content_block"];
                     match block["type"].as_str().unwrap_or("") {
                         "text" => {
-                            content.push(ContentBlock::Text { text: String::new() });
+                            content.push(ContentBlock::Text {
+                                text: String::new(),
+                            });
                             partial_json.push(String::new());
                         }
                         "tool_use" => {
@@ -300,6 +316,7 @@ fn read_stream(
                                 id: block["id"].as_str().unwrap_or("").to_string(),
                                 name,
                                 input: Value::Null,
+                                signature: None,
                             });
                             partial_json.push(String::new());
                         }
@@ -308,7 +325,9 @@ fn read_stream(
                         // the text goes to `thinking` and the placeholder is
                         // dropped below.
                         _ => {
-                            content.push(ContentBlock::Text { text: String::new() });
+                            content.push(ContentBlock::Text {
+                                text: String::new(),
+                            });
                             partial_json.push(String::new());
                         }
                     }
@@ -369,7 +388,12 @@ fn read_stream(
 
     // Drop empty text blocks the protocol sometimes emits around tool use.
     content.retain(|block| !matches!(block, ContentBlock::Text { text } if text.is_empty()));
-    Ok(TurnResult { content, thinking, stop_reason, usage })
+    Ok(TurnResult {
+        content,
+        thinking,
+        stop_reason,
+        usage,
+    })
 }
 
 /// One turn with no tools and no streaming surface, for internal work like
@@ -415,7 +439,10 @@ pub fn check_connectivity(config: &Config) -> Result<(), ProviderError> {
         Ok(_) => Ok(()),
         Err(ureq::Error::Status(status, r)) => {
             let text = r.into_string().unwrap_or_default();
-            Err(ProviderError::Http(status, text.chars().take(300).collect()))
+            Err(ProviderError::Http(
+                status,
+                text.chars().take(300).collect(),
+            ))
         }
         Err(ureq::Error::Transport(t)) => Err(ProviderError::Transport(t.to_string())),
     }
@@ -445,8 +472,14 @@ mod tests {
     fn transcript(turns: usize) -> Vec<Message> {
         (0..turns)
             .map(|i| Message {
-                role: if i % 2 == 0 { "user".into() } else { "assistant".into() },
-                content: vec![ContentBlock::Text { text: format!("message {i}") }],
+                role: if i % 2 == 0 {
+                    "user".into()
+                } else {
+                    "assistant".into()
+                },
+                content: vec![ContentBlock::Text {
+                    text: format!("message {i}"),
+                }],
             })
             .collect()
     }
@@ -467,7 +500,13 @@ mod tests {
 
     #[test]
     fn uncached_body_is_untouched() {
-        let body = build_body(&config(), "be helpful", &transcript(4), &[json!({"name": "a"})], false);
+        let body = build_body(
+            &config(),
+            "be helpful",
+            &transcript(4),
+            &[json!({"name": "a"})],
+            false,
+        );
         assert_eq!(body["system"], "be helpful");
         assert_eq!(body["max_tokens"], 32768);
         assert_eq!(breakpoints(&body), 0);
@@ -494,7 +533,13 @@ mod tests {
 
     #[test]
     fn a_short_transcript_marks_what_exists() {
-        let body = build_body(&config(), "be helpful", &transcript(1), &[json!({"name": "a"})], true);
+        let body = build_body(
+            &config(),
+            "be helpful",
+            &transcript(1),
+            &[json!({"name": "a"})],
+            true,
+        );
         assert_eq!(breakpoints(&body), 3);
         assert!(body["messages"][0]["content"][0]["cache_control"].is_object());
     }
@@ -539,7 +584,8 @@ mod stream_tests {
 
     #[test]
     fn thinking_is_captured_and_kept_out_of_the_content() {
-        let mut events = vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        let mut events =
+            vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
         events.extend(thinking_block(0, "the file is small, I will read it"));
         events.extend([
             json!({"type":"content_block_start","index":1,"content_block":{"type":"text"}}),
@@ -560,7 +606,8 @@ mod stream_tests {
     fn a_tool_call_survives_an_end_turn_stop_reason() {
         // Kimi pairs tool_use blocks with stop_reason "end_turn". The loop
         // used to take that as "the turn is over" and drop the call.
-        let mut events = vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        let mut events =
+            vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
         events.extend(thinking_block(0, "I should look at the file"));
         events.extend([
             json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file"}}),
@@ -583,7 +630,8 @@ mod stream_tests {
 
     #[test]
     fn a_thinking_only_turn_returns_no_content_but_keeps_the_thought() {
-        let mut events = vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        let mut events =
+            vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
         events.extend(thinking_block(0, "I have already answered this"));
         events.extend([
             json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}),

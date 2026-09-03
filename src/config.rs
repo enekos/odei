@@ -13,9 +13,15 @@ pub const KNOWN_MODELS: &[(&str, &str)] = &[
     ("kimi-for-coding", "default coding model, all plans"),
     ("k3", "K3, 1M context (Moderato+)"),
     ("k3-256k", "K3, 256k context (Moderato+)"),
-    ("kimi-for-coding-highspeed", "high-speed variant (Allegretto+)"),
+    (
+        "kimi-for-coding-highspeed",
+        "high-speed variant (Allegretto+)",
+    ),
     ("gemini-2.5-flash", "Gemini 2.5 Flash (GEMINI_API_KEY)"),
-    ("gemini-flash-latest", "newest Gemini Flash (GEMINI_API_KEY)"),
+    (
+        "gemini-flash-latest",
+        "newest Gemini Flash (GEMINI_API_KEY)",
+    ),
     ("gemini-pro-latest", "newest Gemini Pro (GEMINI_API_KEY)"),
 ];
 
@@ -212,7 +218,9 @@ pub struct Config {
 }
 
 pub fn odei_home() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     home.join(".odei")
 }
 
@@ -326,8 +334,9 @@ impl Config {
             .or(stored.prompt_cache)
             .unwrap_or(true);
 
-        let system_prompt_file =
-            std::env::var_os("ODEI_SYSTEM_PROMPT_FILE").map(PathBuf::from).filter(|p| p.exists());
+        let system_prompt_file = std::env::var_os("ODEI_SYSTEM_PROMPT_FILE")
+            .map(PathBuf::from)
+            .filter(|p| p.exists());
 
         Config {
             api_key,

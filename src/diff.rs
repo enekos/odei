@@ -192,8 +192,12 @@ fn align<'a>(old: &[&'a str], new: &[&'a str]) -> Vec<(Op, &'a str)> {
 /// Group the edit script into hunks: every change with `CONTEXT` lines of
 /// company. Runs that would overlap become one hunk.
 fn hunks(ops: &[(Op, &str)]) -> Vec<Hunk> {
-    let changed: Vec<usize> =
-        ops.iter().enumerate().filter(|(_, (op, _))| *op != Op::Keep).map(|(i, _)| i).collect();
+    let changed: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, (op, _))| *op != Op::Keep)
+        .map(|(i, _)| i)
+        .collect();
     if changed.is_empty() {
         return Vec::new();
     }
@@ -220,7 +224,11 @@ fn hunks(ops: &[(Op, &str)]) -> Vec<Hunk> {
                 n
             }
         };
-        numbered.push(Line { op: *op, number, text: (*text).to_string() });
+        numbered.push(Line {
+            op: *op,
+            number,
+            text: (*text).to_string(),
+        });
     }
 
     let mut spans: Vec<(usize, usize)> = Vec::new();
@@ -235,7 +243,9 @@ fn hunks(ops: &[(Op, &str)]) -> Vec<Hunk> {
     }
     spans
         .into_iter()
-        .map(|(start, end)| Hunk { lines: numbered[start..=end].to_vec() })
+        .map(|(start, end)| Hunk {
+            lines: numbered[start..=end].to_vec(),
+        })
         .collect()
 }
 
@@ -246,7 +256,13 @@ fn hunks(ops: &[(Op, &str)]) -> Vec<Hunk> {
 /// that margin; `max_lines` bounds the body, and what is cut is announced.
 ///
 /// Pass `theme::plain()` for an escape-free rendering (the `/call` report).
-pub fn render(theme: &Theme, diff: &FileDiff, indent: usize, width: usize, max_lines: usize) -> Vec<String> {
+pub fn render(
+    theme: &Theme,
+    diff: &FileDiff,
+    indent: usize,
+    width: usize,
+    max_lines: usize,
+) -> Vec<String> {
     let mut out = Vec::new();
     if diff.hunks.is_empty() {
         return out;
@@ -321,7 +337,10 @@ fn clip(text: &str, room: usize) -> String {
     if flat.chars().count() <= room {
         flat.to_string()
     } else {
-        flat.chars().take(room.saturating_sub(1)).collect::<String>() + "…"
+        flat.chars()
+            .take(room.saturating_sub(1))
+            .collect::<String>()
+            + "…"
     }
 }
 
@@ -368,12 +387,16 @@ mod tests {
     #[test]
     fn distant_changes_become_separate_hunks() {
         let old: String = (1..=40).map(|i| format!("line {i}\n")).collect();
-        let new = old.replace("line 3\n", "line three\n").replace("line 30\n", "line thirty\n");
+        let new = old
+            .replace("line 3\n", "line three\n")
+            .replace("line 30\n", "line thirty\n");
         let diff = compute("x.txt", &old, &new, false);
         assert_eq!(diff.hunks.len(), 2, "far apart changes must not merge");
         assert_eq!((diff.added, diff.removed), (2, 2));
         // Nearby changes do merge.
-        let new = old.replace("line 3\n", "line three\n").replace("line 5\n", "line five\n");
+        let new = old
+            .replace("line 3\n", "line three\n")
+            .replace("line 5\n", "line five\n");
         assert_eq!(compute("x.txt", &old, &new, false).hunks.len(), 1);
     }
 
@@ -431,7 +454,11 @@ mod tests {
         let diff = compute("x.txt", &old, &new, true);
         let lines = render(crate::theme::plain(), &diff, 2, 80, 10);
         assert_eq!(lines.len(), 11);
-        assert!(lines.last().unwrap().contains("… 20 more lines"), "{:?}", lines.last());
+        assert!(
+            lines.last().unwrap().contains("… 20 more lines"),
+            "{:?}",
+            lines.last()
+        );
     }
 
     #[test]
@@ -445,7 +472,9 @@ mod tests {
     #[test]
     fn a_gap_between_hunks_is_one_marker() {
         let old: String = (1..=40).map(|i| format!("line {i}\n")).collect();
-        let new = old.replace("line 3\n", "line three\n").replace("line 30\n", "line thirty\n");
+        let new = old
+            .replace("line 3\n", "line three\n")
+            .replace("line 30\n", "line thirty\n");
         let diff = compute("x.txt", &old, &new, false);
         let body = plain_block(&diff, 80);
         assert_eq!(body.matches('⋯').count(), 1, "{body}");

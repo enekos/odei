@@ -154,9 +154,7 @@ impl Call<'_> {
                 // A command's own last word explains it; its first is a
                 // banner, and "(no output)" explains nothing at all.
                 let reason = self.output.lines().map(str::trim).rev().find(|line| {
-                    !line.is_empty()
-                        && !line.starts_with("exit code:")
-                        && *line != "(no output)"
+                    !line.is_empty() && !line.starts_with("exit code:") && *line != "(no output)"
                 });
                 return Some(match reason {
                     Some(line) => clip(&format!("exit {code} · {line}"), 72),
@@ -170,7 +168,11 @@ impl Call<'_> {
                 return Some("no change".into());
             }
             let stat = diff.stat();
-            return Some(if diff.created { format!("{stat} · new file") } else { stat });
+            return Some(if diff.created {
+                format!("{stat} · new file")
+            } else {
+                stat
+            });
         }
         let rows = || self.output.lines().filter(|l| !l.starts_with('[')).count();
         let plural = |n: usize, noun: &str| {
@@ -198,7 +200,10 @@ impl Call<'_> {
                     Some("count") => first_line(self.output).map(|l| clip(l, 72)),
                     Some("files_with_matches") => Some(plural(rows(), "file")),
                     _ => Some(plural(
-                        self.output.lines().filter(|l| l.contains(':') && !l.starts_with('[')).count(),
+                        self.output
+                            .lines()
+                            .filter(|l| l.contains(':') && !l.starts_with('['))
+                            .count(),
                         "match",
                     )),
                 }
@@ -209,7 +214,10 @@ impl Call<'_> {
             },
             "list_files" => {
                 let entries = rows();
-                Some(format!("{entries} entr{}", if entries == 1 { "y" } else { "ies" }))
+                Some(format!(
+                    "{entries} entr{}",
+                    if entries == 1 { "y" } else { "ies" }
+                ))
             }
             "semantic_search" => Some(plural(rows(), "candidate")),
             "terminal" => {
@@ -243,19 +251,35 @@ impl Call<'_> {
 
         if detail.shows_arguments() {
             for (key, value) in arguments(self.tool, self.input, self.diff.is_some()) {
-                out.push(dim(clip(&format!("{key} {value}"), width.saturating_sub(margin))));
+                out.push(dim(clip(
+                    &format!("{key} {value}"),
+                    width.saturating_sub(margin),
+                )));
             }
         }
 
-        if let Some(diff) = self.diff.filter(|d| !d.is_empty() && detail.diff_lines() > 0) {
+        if let Some(diff) = self
+            .diff
+            .filter(|d| !d.is_empty() && detail.diff_lines() > 0)
+        {
             if diff.hunks.is_empty() {
                 out.push(dim(format!("{} · too large to show", diff.stat())));
             } else {
-                out.extend(crate::diff::render(theme, diff, margin, width, detail.diff_lines()));
+                out.extend(crate::diff::render(
+                    theme,
+                    diff,
+                    margin,
+                    width,
+                    detail.diff_lines(),
+                ));
             }
         }
 
-        let cap = if self.is_error { detail.error_lines() } else { detail.output_lines() };
+        let cap = if self.is_error {
+            detail.error_lines()
+        } else {
+            detail.output_lines()
+        };
         // A diff already says what a file-changing call did; its one-line
         // confirmation underneath would be noise.
         let redundant = self.diff.is_some() && !self.is_error;
@@ -264,23 +288,28 @@ impl Call<'_> {
             // A command's reason for failing is at the end of its output; a
             // tool's is at the start of its message.
             let tail = self.tool == "terminal";
-            let shown: Vec<&str> =
-                if lines.len() <= cap {
-                    lines.clone()
-                } else if tail {
-                    lines[lines.len() - cap..].to_vec()
-                } else {
-                    lines[..cap].to_vec()
-                };
+            let shown: Vec<&str> = if lines.len() <= cap {
+                lines.clone()
+            } else if tail {
+                lines[lines.len() - cap..].to_vec()
+            } else {
+                lines[..cap].to_vec()
+            };
             let elided = lines.len() - shown.len();
             if elided > 0 && tail {
-                out.push(dim(format!("… {elided} earlier lines{}", reference(self.call))));
+                out.push(dim(format!(
+                    "… {elided} earlier lines{}",
+                    reference(self.call)
+                )));
             }
             for line in shown {
                 out.push(dim(clip(line, width.saturating_sub(margin))));
             }
             if elided > 0 && !tail {
-                out.push(dim(format!("… {elided} more lines{}", reference(self.call))));
+                out.push(dim(format!(
+                    "… {elided} more lines{}",
+                    reference(self.call)
+                )));
             }
         }
         out
@@ -300,8 +329,12 @@ fn reference(call: Option<usize>) -> String {
 /// text arguments of a file change: the diff below says the same thing, read
 /// the way a person reads a change.
 fn arguments(tool: &str, input: &Value, has_diff: bool) -> Vec<(String, String)> {
-    let label_arg = crate::tools::find(tool).map(|spec| spec.label_arg).unwrap_or("");
-    let Some(map) = input.as_object() else { return Vec::new() };
+    let label_arg = crate::tools::find(tool)
+        .map(|spec| spec.label_arg)
+        .unwrap_or("");
+    let Some(map) = input.as_object() else {
+        return Vec::new();
+    };
     let mut rows = Vec::new();
     for (key, value) in map {
         if has_diff && matches!(key.as_str(), "old_string" | "new_string" | "content") {
@@ -373,18 +406,26 @@ fn first_line(text: &str) -> Option<&str> {
 
 /// The `exit code: N` the terminal tool appends to a captured run.
 fn exit_code(output: &str) -> Option<&str> {
-    output.lines().rev().take(2).find_map(|line| line.trim().strip_prefix("exit code: "))
+    output
+        .lines()
+        .rev()
+        .take(2)
+        .find_map(|line| line.trim().strip_prefix("exit code: "))
 }
 
 /// A line from `read_file`: right-aligned number, tab, source.
 fn is_numbered(line: &str) -> bool {
-    line.split_once('\t').is_some_and(|(number, _)| number.trim().parse::<u64>().is_ok())
+    line.split_once('\t')
+        .is_some_and(|(number, _)| number.trim().parse::<u64>().is_ok())
 }
 
 /// Make a line safe to print: tabs become spaces and control characters go,
 /// so a tool result can never move the cursor or repaint the screen.
 pub fn sanitize(text: &str) -> String {
-    text.chars().map(|c| if c == '\t' { ' ' } else { c }).filter(|c| !c.is_control()).collect()
+    text.chars()
+        .map(|c| if c == '\t' { ' ' } else { c })
+        .filter(|c| !c.is_control())
+        .collect()
 }
 
 /// Sanitize, then cut to `room`, marking that something was cut.
@@ -394,7 +435,10 @@ pub fn clip(text: &str, room: usize) -> String {
     if flat.chars().count() <= room {
         flat.to_string()
     } else {
-        flat.chars().take(room.saturating_sub(1)).collect::<String>() + "…"
+        flat.chars()
+            .take(room.saturating_sub(1))
+            .collect::<String>()
+            + "…"
     }
 }
 
@@ -404,7 +448,14 @@ mod tests {
     use serde_json::json;
 
     fn call<'a>(tool: &'a str, input: &'a Value, output: &'a str) -> Call<'a> {
-        Call { tool, input, output, is_error: false, diff: None, call: Some(7) }
+        Call {
+            tool,
+            input,
+            output,
+            is_error: false,
+            diff: None,
+            call: Some(7),
+        }
     }
 
     #[test]
@@ -412,37 +463,61 @@ mod tests {
         let input = json!({"path": "src/ui.rs", "start_line": 120, "line_count": 200});
         assert_eq!(qualifier("read_file", &input).unwrap(), "lines 120–319");
 
-        let input = json!({"pattern": "TODO", "include": "*.rs", "path": "src", "case_insensitive": true});
-        assert_eq!(qualifier("grep_files", &input).unwrap(), "in *.rs · under src · any case");
+        let input =
+            json!({"pattern": "TODO", "include": "*.rs", "path": "src", "case_insensitive": true});
+        assert_eq!(
+            qualifier("grep_files", &input).unwrap(),
+            "in *.rs · under src · any case"
+        );
 
         let input = json!({"action": "read", "session_id": "terminal-2"});
         assert_eq!(qualifier("terminal", &input).unwrap(), "read · terminal-2");
 
         // An ordinary exec adds nothing: the command is already the label.
-        assert_eq!(qualifier("terminal", &json!({"action": "exec", "command": "ls"})), None);
+        assert_eq!(
+            qualifier("terminal", &json!({"action": "exec", "command": "ls"})),
+            None
+        );
         assert_eq!(qualifier("code_outline", &json!({"path": "."})), None);
     }
 
     #[test]
     fn stats_name_what_came_back() {
         let read = "     1\tfirst\n     2\tsecond\n[lines 1-2 of 900]";
-        assert_eq!(call("read_file", &json!({"path": "a"}), read).stat().unwrap(), "2 lines");
+        assert_eq!(
+            call("read_file", &json!({"path": "a"}), read)
+                .stat()
+                .unwrap(),
+            "2 lines"
+        );
 
         let grep = "src/a.rs:3:TODO\nsrc/b.rs:9:TODO\n[showing 2 of 40 matching lines]";
-        assert_eq!(call("grep_files", &json!({"pattern": "TODO"}), grep).stat().unwrap(), "2 matches");
         assert_eq!(
-            call("grep_files", &json!({"pattern": "x"}), "no matches").stat().unwrap(),
+            call("grep_files", &json!({"pattern": "TODO"}), grep)
+                .stat()
+                .unwrap(),
+            "2 matches"
+        );
+        assert_eq!(
+            call("grep_files", &json!({"pattern": "x"}), "no matches")
+                .stat()
+                .unwrap(),
             "no matches"
         );
 
         let run = "compiling\nwarning: unused\nexit code: 0";
         assert_eq!(
-            call("terminal", &json!({"action": "exec"}), run).stat().unwrap(),
+            call("terminal", &json!({"action": "exec"}), run)
+                .stat()
+                .unwrap(),
             "exit 0 · 3 lines"
         );
 
         // One line that only restates the label earns no stat.
-        assert_eq!(call("delete_file", &json!({"path": "a"}), "Deleted a").stat(), None);
+        assert_eq!(
+            call("delete_file", &json!({"path": "a"}), "Deleted a").stat(),
+            None
+        );
     }
 
     #[test]
@@ -513,8 +588,14 @@ mod tests {
         // Expanded adds the arguments — but not the text of the change,
         // which is what the diff already is.
         let expanded = edited.body(theme, Detail::Expanded, 4, 80);
-        assert!(!expanded.iter().any(|l| l.contains("old_string")), "{expanded:?}");
-        assert!(!expanded.iter().any(|l| l.contains("new_string")), "{expanded:?}");
+        assert!(
+            !expanded.iter().any(|l| l.contains("old_string")),
+            "{expanded:?}"
+        );
+        assert!(
+            !expanded.iter().any(|l| l.contains("new_string")),
+            "{expanded:?}"
+        );
     }
 
     #[test]
@@ -537,15 +618,27 @@ mod tests {
         let mut ran = call("terminal", &exec, &long);
         ran.is_error = true;
         let body = ran.body(theme, Detail::Normal, 2, 80);
-        assert!(body[0].contains("… 34 earlier lines · /call 7"), "{:?}", body[0]);
-        assert!(body.last().unwrap().contains("line 40"), "{:?}", body.last());
+        assert!(
+            body[0].contains("… 34 earlier lines · /call 7"),
+            "{:?}",
+            body[0]
+        );
+        assert!(
+            body.last().unwrap().contains("line 40"),
+            "{:?}",
+            body.last()
+        );
 
         // A read's head is.
         let path = json!({"path": "a"});
         let read = call("read_file", &path, &long);
         let body = read.body(theme, Detail::Expanded, 2, 80);
         assert!(body[0].contains("line 1"), "{:?}", body[0]);
-        assert!(body.last().unwrap().contains("… 20 more lines · /call 7"), "{:?}", body.last());
+        assert!(
+            body.last().unwrap().contains("… 20 more lines · /call 7"),
+            "{:?}",
+            body.last()
+        );
     }
 
     #[test]
@@ -553,14 +646,22 @@ mod tests {
         let big = "x".repeat(400);
         let input = json!({"path": "a.rs", "content": big});
         let rows = arguments("write_file", &input, false);
-        assert!(rows.iter().any(|(k, v)| k == "content" && v == "<400 bytes>"), "{rows:?}");
+        assert!(
+            rows.iter()
+                .any(|(k, v)| k == "content" && v == "<400 bytes>"),
+            "{rows:?}"
+        );
         // The label argument is not repeated under the label.
         assert!(!rows.iter().any(|(k, _)| k == "path"), "{rows:?}");
 
         // Except when it is a multi-line command, which the label truncated.
         let input = json!({"action": "exec", "command": "set -e\nmake test"});
         let rows = arguments("terminal", &input, false);
-        assert!(rows.iter().any(|(k, v)| k == "command" && v == "set -e ⏎ make test"), "{rows:?}");
+        assert!(
+            rows.iter()
+                .any(|(k, v)| k == "command" && v == "set -e ⏎ make test"),
+            "{rows:?}"
+        );
     }
 
     #[test]

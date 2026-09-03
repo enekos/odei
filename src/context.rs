@@ -148,7 +148,12 @@ pub fn remember(
 }
 
 fn git(workspace: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(workspace).args(args).output().ok()?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(args)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -167,7 +172,10 @@ fn project_instructions(workspace: &Path) -> String {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let mut candidates: Vec<(String, std::path::PathBuf)> = Vec::new();
     if let Some(home) = home {
-        candidates.push(("~/.odei/AGENTS.md".into(), home.join(".odei").join("AGENTS.md")));
+        candidates.push((
+            "~/.odei/AGENTS.md".into(),
+            home.join(".odei").join("AGENTS.md"),
+        ));
     }
     candidates.push(("AGENTS.md".into(), workspace.join("AGENTS.md")));
     for (label, path) in candidates {
@@ -245,10 +253,18 @@ mod tests {
         assert!(written.starts_with('#'), "{written}");
         assert!(written.ends_with("- always use pnpm here\n"), "{written}");
 
-        remember(&dir, NoteScope::Project, "tests live in tests/\nnot in src/").unwrap();
+        remember(
+            &dir,
+            NoteScope::Project,
+            "tests live in tests/\nnot in src/",
+        )
+        .unwrap();
         let appended = std::fs::read_to_string(&path).unwrap();
         assert!(appended.contains("- always use pnpm here\n"), "{appended}");
-        assert!(appended.ends_with("- tests live in tests/ not in src/\n"), "{appended}");
+        assert!(
+            appended.ends_with("- tests live in tests/ not in src/\n"),
+            "{appended}"
+        );
 
         assert!(project_instructions(&dir).contains("always use pnpm here"));
         assert!(remember(&dir, NoteScope::Project, "  \n ").is_err());

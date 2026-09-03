@@ -191,7 +191,10 @@ impl Agent {
         self.session.rewrite();
         // The next response tells us the real figure; until then assume relief.
         self.last_input_tokens = 0;
-        Ok(format!("compacted {cut} messages into a {}-word brief", summary.split_whitespace().count()))
+        Ok(format!(
+            "compacted {cut} messages into a {}-word brief",
+            summary.split_whitespace().count()
+        ))
     }
 
     /// Compact automatically once the window is most of the way full.
@@ -285,9 +288,9 @@ impl Agent {
                 .content
                 .iter()
                 .filter_map(|block| match block {
-                    ContentBlock::ToolUse { id, name, input } => {
-                        Some((id.clone(), name.clone(), input.clone()))
-                    }
+                    ContentBlock::ToolUse {
+                        id, name, input, ..
+                    } => Some((id.clone(), name.clone(), input.clone())),
                     _ => None,
                 })
                 .collect();
@@ -301,8 +304,10 @@ impl Agent {
             });
 
             if !turn.content.is_empty() {
-                self.session
-                    .append(Message { role: "assistant".into(), content: turn.content.clone() });
+                self.session.append(Message {
+                    role: "assistant".into(),
+                    content: turn.content.clone(),
+                });
             }
 
             if tool_calls.is_empty() {
@@ -321,7 +326,9 @@ impl Agent {
                         sink.on_text_done();
                         self.session.append(Message {
                             role: "assistant".into(),
-                            content: vec![ContentBlock::Text { text: thought.into() }],
+                            content: vec![ContentBlock::Text {
+                                text: thought.into(),
+                            }],
                         });
                     }
                 } else if turn.stop_reason == "max_tokens" {
@@ -358,7 +365,10 @@ impl Agent {
                     is_error: outcome.is_error,
                 });
             }
-            self.session.append(Message { role: "user".into(), content: results });
+            self.session.append(Message {
+                role: "user".into(),
+                content: results,
+            });
         }
 
         sink.on_notice(&format!(

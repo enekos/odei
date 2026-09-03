@@ -26,15 +26,19 @@ pub fn scan(text: &str) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
     for capture in pattern().captures_iter(text) {
         let whole = capture.get(0).expect("whole match");
-        let standalone =
-            text[..whole.start()].chars().next_back().map(char::is_whitespace).unwrap_or(true);
+        let standalone = text[..whole.start()]
+            .chars()
+            .next_back()
+            .map(char::is_whitespace)
+            .unwrap_or(true);
         if !standalone {
             continue;
         }
         let token = match capture.get(1) {
             Some(quoted) => quoted.as_str().to_string(),
-            None => trim_trailing_punctuation(capture.get(2).expect("bare match").as_str())
-                .to_string(),
+            None => {
+                trim_trailing_punctuation(capture.get(2).expect("bare match").as_str()).to_string()
+            }
         };
         if token.is_empty() || token == "." || found.contains(&token) {
             continue;
@@ -64,7 +68,9 @@ pub fn expand(ctx: &ToolContext, text: &str) -> (String, Vec<Attachment>) {
             break;
         }
         let resolved = ctx.resolve(&mention);
-        let Ok(meta) = std::fs::metadata(&resolved) else { continue };
+        let Ok(meta) = std::fs::metadata(&resolved) else {
+            continue;
+        };
         let (kind, outcome) = if meta.is_dir() {
             let mapped = outline::code_outline(ctx, &json!({ "path": mention }));
             if mapped.is_error || mapped.text.trim().is_empty() {
@@ -85,7 +91,12 @@ pub fn expand(ctx: &ToolContext, text: &str) -> (String, Vec<Attachment>) {
         }
         budget = budget.saturating_sub(body.len());
         let summary = format!("{} lines", body.lines().count());
-        attachments.push(Attachment { mention, kind, summary, body });
+        attachments.push(Attachment {
+            mention,
+            kind,
+            summary,
+            body,
+        });
     }
     if attachments.is_empty() {
         return (text.to_string(), Vec::new());

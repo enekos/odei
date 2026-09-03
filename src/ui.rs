@@ -37,7 +37,10 @@ const EXPAND_ALL_CAP: usize = 40;
 /// Room to draw in. Wide terminals stop growing the measure at a readable
 /// line length instead of stretching a diff across the whole desk.
 fn width() -> usize {
-    crossterm::terminal::size().map(|(columns, _)| columns as usize).unwrap_or(80).clamp(40, 160)
+    crossterm::terminal::size()
+        .map(|(columns, _)| columns as usize)
+        .unwrap_or(80)
+        .clamp(40, 160)
 }
 
 pub static CANCEL: AtomicBool = AtomicBool::new(false);
@@ -205,8 +208,11 @@ fn activity_line(
     call: Option<usize>,
     is_error: bool,
 ) -> String {
-    let (label_style, stat_style) =
-        if is_error { (theme.warning, theme.warning) } else { (theme.dim, theme.hint) };
+    let (label_style, stat_style) = if is_error {
+        (theme.warning, theme.warning)
+    } else {
+        (theme.dim, theme.hint)
+    };
     let marker = if is_error { " ✗" } else { "" };
     let qualifier = qualifier.map(|q| format!(" · {q}")).unwrap_or_default();
     let right = match (&stat, &timing) {
@@ -219,11 +225,21 @@ fn activity_line(
 
     // Everything but the head is short and load-bearing, so the head is what
     // gives way when the terminal is narrow.
-    let fixed = INDENT.len() + 2 + marker.len() + gap(&right) + right.chars().count()
-        + gap(&handle) + handle.chars().count();
-    let head =
-        activity::clip(&format!("{label}{qualifier}"), width.saturating_sub(fixed).max(12));
-    let mut line = format!("{label_style}{INDENT}{connector} {head}{marker}{}", theme.reset());
+    let fixed = INDENT.len()
+        + 2
+        + marker.len()
+        + gap(&right)
+        + right.chars().count()
+        + gap(&handle)
+        + handle.chars().count();
+    let head = activity::clip(
+        &format!("{label}{qualifier}"),
+        width.saturating_sub(fixed).max(12),
+    );
+    let mut line = format!(
+        "{label_style}{INDENT}{connector} {head}{marker}{}",
+        theme.reset()
+    );
     if !right.is_empty() {
         line.push_str(&format!("  {stat_style}{right}{}", theme.reset()));
     }
@@ -310,7 +326,10 @@ impl Sink for ShellSink<'_> {
             activity::tokens(step.usage.output_tokens)
         )];
         if step.usage.cache_read_tokens > 0 {
-            parts.push(format!("{} cached", activity::tokens(step.usage.cache_read_tokens)));
+            parts.push(format!(
+                "{} cached",
+                activity::tokens(step.usage.cache_read_tokens)
+            ));
         }
         if let Some(timing) = activity::duration(step.elapsed.as_millis() as u64) {
             parts.push(timing);
@@ -318,9 +337,17 @@ impl Sink for ShellSink<'_> {
         // Below a percent there is nothing to worry about, and "0% ctx" on
         // every step is just a wider line.
         if step.context_fraction >= 0.01 {
-            parts.push(format!("{:.0}% ctx", (step.context_fraction * 100.0).min(100.0)));
+            parts.push(format!(
+                "{:.0}% ctx",
+                (step.context_fraction * 100.0).min(100.0)
+            ));
         }
-        println!("{}{INDENT}· {}{}", self.theme.dim, parts.join(" · "), self.theme.reset());
+        println!(
+            "{}{INDENT}· {}{}",
+            self.theme.dim,
+            parts.join(" · "),
+            self.theme.reset()
+        );
     }
 
     fn on_text_delta(&mut self, text: &str) {
@@ -541,7 +568,11 @@ fn statusline(theme: &Theme, agent: &Agent) -> String {
         PermissionMode::Auto => format!("{}auto{}", theme.permission_auto, theme.statusline),
         PermissionMode::Yolo => format!("{}YOLO{}", theme.permission_auto, theme.statusline),
     };
-    let mut segments = vec![mode_label, agent.config.model.clone(), workspace_name(agent)];
+    let mut segments = vec![
+        mode_label,
+        agent.config.model.clone(),
+        workspace_name(agent),
+    ];
     // Only when it is not the default: a statusline that names every setting
     // stops being read.
     if agent.config.detail != Detail::Normal {
@@ -557,32 +588,67 @@ fn statusline(theme: &Theme, agent: &Agent) -> String {
     if let Some(title) = &agent.session.meta.title {
         segments.push(title.clone());
     }
-    format!("{}{}{}", theme.statusline, segments.join(" · "), theme.reset())
+    format!(
+        "{}{}{}",
+        theme.statusline,
+        segments.join(" · "),
+        theme.reset()
+    )
 }
 
 const HELP: &[(&str, &str)] = &[
-    ("@<path>", "attach a file — or a directory's map — to your message"),
-    ("!<command>", "run a command yourself; I see it with your next message"),
+    (
+        "@<path>",
+        "attach a file — or a directory's map — to your message",
+    ),
+    (
+        "!<command>",
+        "run a command yourself; I see it with your next message",
+    ),
     ("#<note>", "remember something in AGENTS.md"),
     ("/help", "list these commands"),
     ("/clear", "wipe the screen and begin a new session"),
     ("/new", "begin a new session, keeping this one saved"),
-    ("/reset", "forget this session's history but keep the session"),
+    (
+        "/reset",
+        "forget this session's history but keep the session",
+    ),
     ("/resume", "pick a saved session to continue"),
     ("/rename <title>", "give this session a name"),
-    ("/model <id-or-query>", "switch model, and remember the choice"),
+    (
+        "/model <id-or-query>",
+        "switch model, and remember the choice",
+    ),
     ("/models", "list the models this key can reach"),
-    ("/permissions [ask|auto|yolo|reset]", "decide how much runs without asking"),
+    (
+        "/permissions [ask|auto|yolo|reset]",
+        "decide how much runs without asking",
+    ),
     ("/allowlist", "show the approvals you told me to remember"),
     ("/status", "where I am pointed and how I am configured"),
     ("/stats", "turns and tokens for this session"),
-    ("/usage (/cost)", "token totals per model across all sessions"),
+    (
+        "/usage (/cost)",
+        "token totals per model across all sessions",
+    ),
     ("/calls", "pick a tool call and see exactly what it did"),
-    ("/call <n>", "open call #n — command, arguments, full output"),
-    ("/expand", "show every tool call in full: arguments, diffs, output"),
-    ("/expand <n|last|all>", "reprint calls already made, in full, here"),
+    (
+        "/call <n>",
+        "open call #n — command, arguments, full output",
+    ),
+    (
+        "/expand",
+        "show every tool call in full: arguments, diffs, output",
+    ),
+    (
+        "/expand <n|last|all>",
+        "reprint calls already made, in full, here",
+    ),
     ("/collapse", "fold tool calls back to one line each"),
-    ("/detail [level]", "collapsed, normal, or expanded — and remember it"),
+    (
+        "/detail [level]",
+        "collapsed, normal, or expanded — and remember it",
+    ),
     ("/compact", "summarize older turns to free up context"),
     ("/copy", "put my last reply on the clipboard"),
     ("/setup", "store an API key"),
@@ -652,7 +718,11 @@ fn cache_line(agent: &Agent) -> String {
     } else {
         ""
     };
-    let share = if prompt > 0 { served as f64 / prompt as f64 * 100.0 } else { 0.0 };
+    let share = if prompt > 0 {
+        served as f64 / prompt as f64 * 100.0
+    } else {
+        0.0
+    };
     format!(
         "prompt cache{state} · {served} read · {} written · {share:.0}% of prompt served from cache",
         usage.cache_write_tokens
@@ -670,7 +740,12 @@ fn set_detail(theme: &Theme, agent: &mut Agent, level: Detail) {
         Detail::Normal => "one line per call, plus the diff when a file changes",
         Detail::Expanded => "arguments, diffs, output, reasoning, per-step cost",
     };
-    println!("{}detail: {} — {note}{}", theme.dim, level.label(), theme.reset());
+    println!(
+        "{}detail: {} — {note}{}",
+        theme.dim,
+        level.label(),
+        theme.reset()
+    );
     if level == Detail::Expanded {
         println!(
             "{}calls already on screen keep the shape they were drawn in — /expand last to redraw them{}",
@@ -687,7 +762,11 @@ fn set_detail(theme: &Theme, agent: &mut Agent, level: Detail) {
 fn reprint_calls(theme: &Theme, session_id: &str, arg: &str) {
     let records = crate::calls::load(session_id);
     if records.is_empty() {
-        println!("{}no tool calls in this session yet{}", theme.dim, theme.reset());
+        println!(
+            "{}no tool calls in this session yet{}",
+            theme.dim,
+            theme.reset()
+        );
         return;
     }
     let mut words = arg.split_whitespace();
@@ -753,7 +832,11 @@ fn reprint_calls(theme: &Theme, session_id: &str, arg: &str) {
                 record.is_error,
             )
         );
-        print_body(theme, call.body(theme, Detail::Expanded, BODY_MARGIN, width), true);
+        print_body(
+            theme,
+            call.body(theme, Detail::Expanded, BODY_MARGIN, width),
+            true,
+        );
     }
 }
 
@@ -801,7 +884,12 @@ fn print_shell_run(theme: &Theme, run: &crate::agent::ShellRun) {
         ));
     }
     for line in shown {
-        body.push(format!("{}{}{}", theme.dim, activity::clip(line, room), theme.reset()));
+        body.push(format!(
+            "{}{}{}",
+            theme.dim,
+            activity::clip(line, room),
+            theme.reset()
+        ));
     }
     print_body(theme, body, true);
     println!();
@@ -866,9 +954,18 @@ fn remember_flow(theme: &Theme, workspace: &std::path::Path, note: &str) {
     };
     match crate::context::remember(workspace, scope, note) {
         Ok(path) => {
-            println!("{INDENT}{}└ saved to {}{}", theme.dim, path.display(), theme.reset())
+            println!(
+                "{INDENT}{}└ saved to {}{}",
+                theme.dim,
+                path.display(),
+                theme.reset()
+            )
         }
-        Err(e) => println!("{INDENT}{}└ could not save: {e}{}", theme.warning, theme.reset()),
+        Err(e) => println!(
+            "{INDENT}{}└ could not save: {e}{}",
+            theme.warning,
+            theme.reset()
+        ),
     }
     println!();
 }
@@ -890,7 +987,6 @@ pub fn last_assistant_text(agent: &Agent) -> Option<String> {
         (!text.is_empty()).then_some(text)
     })
 }
-
 
 pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
     let theme = Theme::detect();
@@ -956,7 +1052,11 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
         let line = match editor.readline(theme::INPUT_PREFIX) {
             Ok(line) => line,
             Err(rustyline::error::ReadlineError::Interrupted) => {
-                println!("{}(use /quit or Ctrl+D to exit){}", theme.dim, theme.reset());
+                println!(
+                    "{}(use /quit or Ctrl+D to exit){}",
+                    theme.dim,
+                    theme.reset()
+                );
                 continue;
             }
             Err(rustyline::error::ReadlineError::Eof) => break,
@@ -1302,7 +1402,12 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                 .iter()
                 .map(|item| format!("@{} ({}, {})", item.mention, item.kind, item.summary))
                 .collect();
-            println!("{}attached {}{}", theme.dim, list.join(" · "), theme.reset());
+            println!(
+                "{}attached {}{}",
+                theme.dim,
+                list.join(" · "),
+                theme.reset()
+            );
             println!();
         }
 
@@ -1339,13 +1444,25 @@ mod tests {
             Some(7),
             false,
         );
-        assert_eq!(line, "  ├ Read src/ui.rs · lines 120–319  142 lines · 1.2s  #7");
+        assert_eq!(
+            line,
+            "  ├ Read src/ui.rs · lines 120–319  142 lines · 1.2s  #7"
+        );
     }
 
     #[test]
     fn a_running_call_has_no_stat_yet_and_a_failed_one_says_why() {
-        let running =
-            activity_line(theme::plain(), W, "└", "Editing a.rs", None, None, None, None, false);
+        let running = activity_line(
+            theme::plain(),
+            W,
+            "└",
+            "Editing a.rs",
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
         assert_eq!(running, "  └ Editing a.rs");
 
         let failed = activity_line(
@@ -1359,7 +1476,10 @@ mod tests {
             Some(3),
             true,
         );
-        assert_eq!(failed, "  └ Edited a.rs ✗  old_string not found in a.rs  #3");
+        assert_eq!(
+            failed,
+            "  └ Edited a.rs ✗  old_string not found in a.rs  #3"
+        );
     }
 
     #[test]
@@ -1375,14 +1495,19 @@ mod tests {
             Some(12),
             false,
         );
-        assert!(line.chars().count() <= 40, "{} chars: {line}", line.chars().count());
+        assert!(
+            line.chars().count() <= 40,
+            "{} chars: {line}",
+            line.chars().count()
+        );
         assert!(line.ends_with("exit 0 · 2.4s  #12"), "{line}");
         assert!(line.contains('…'), "{line}");
     }
 
     #[test]
     fn an_edit_draws_its_diff_under_the_line() {
-        let diff = crate::diff::compute("src/a.rs", "one\ntwo\nthree\n", "one\nTWO\nthree\n", false);
+        let diff =
+            crate::diff::compute("src/a.rs", "one\ntwo\nthree\n", "one\nTWO\nthree\n", false);
         let input = json!({"path": "src/a.rs"});
         let done = ToolDone {
             tool: "edit_file",
@@ -1412,20 +1537,31 @@ mod tests {
         let body = call.body(theme::plain(), Detail::Normal, BODY_MARGIN, W);
         assert_eq!(body, vec![" 1   one", " 2 - two", " 2 + TWO", " 3   three"]);
         // And folded away entirely when the user asked for one line each.
-        assert!(call.body(theme::plain(), Detail::Collapsed, BODY_MARGIN, W).is_empty());
+        assert!(call
+            .body(theme::plain(), Detail::Collapsed, BODY_MARGIN, W)
+            .is_empty());
     }
 
     #[test]
     fn reasoning_is_quoted_in_the_margin_and_wrapped_not_cut() {
-        assert_eq!(quoted(theme::plain(), "the file is small", W), ["  │ the file is small"]);
+        assert_eq!(
+            quoted(theme::plain(), "the file is small", W),
+            ["  │ the file is small"]
+        );
         // A long thought keeps every word, across as many lines as it needs.
         let thought = "the edit tool said line two but the file says line three, so the \
                        number it reports is off by one and worth checking";
         let lines = quoted(theme::plain(), thought, 40);
         assert!(lines.len() > 1, "{lines:?}");
-        assert!(lines.iter().all(|line| line.chars().count() <= 40), "{lines:?}");
-        let rejoined: String =
-            lines.iter().map(|line| line.trim_start_matches(['│', ' '])).collect::<Vec<_>>().join(" ");
+        assert!(
+            lines.iter().all(|line| line.chars().count() <= 40),
+            "{lines:?}"
+        );
+        let rejoined: String = lines
+            .iter()
+            .map(|line| line.trim_start_matches(['│', ' ']))
+            .collect::<Vec<_>>()
+            .join(" ");
         assert_eq!(rejoined, thought);
     }
 }

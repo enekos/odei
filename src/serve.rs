@@ -159,7 +159,11 @@ impl Sink for JsonSink {
 /// denied instead of hanging.
 pub fn detached_json_sink() -> impl Sink {
     let (_closed, answers) = channel();
-    JsonSink { answers, next_approval: 0, streaming: false }
+    JsonSink {
+        answers,
+        next_approval: 0,
+        streaming: false,
+    }
 }
 
 /// Read commands forever, routing the two that must be handled mid-turn.
@@ -272,7 +276,9 @@ pub fn serve(mut config: Config, workspace: Option<String>, resume: Option<Strin
     if let Some(root) = workspace {
         let root = std::path::PathBuf::from(root);
         if !root.is_dir() {
-            emit(json!({"event": "fatal", "text": format!("no such directory: {}", root.display())}));
+            emit(
+                json!({"event": "fatal", "text": format!("no such directory: {}", root.display())}),
+            );
             return 1;
         }
         // Reload rather than patch: the config is per-workspace.
@@ -302,8 +308,10 @@ pub fn serve(mut config: Config, workspace: Option<String>, resume: Option<Strin
         None => Session::create(&config.workspace_root, &config.model),
     };
 
-    let models: Vec<Value> =
-        KNOWN_MODELS.iter().map(|(id, note)| json!({"id": id, "note": note})).collect();
+    let models: Vec<Value> = KNOWN_MODELS
+        .iter()
+        .map(|(id, note)| json!({"id": id, "note": note}))
+        .collect();
     emit(json!({
         "event": "ready",
         "version": env!("CARGO_PKG_VERSION"),
@@ -313,7 +321,12 @@ pub fn serve(mut config: Config, workspace: Option<String>, resume: Option<Strin
     }));
 
     let mut agent = Agent::new(config, session);
-    let history: Vec<Value> = agent.session.messages.iter().filter_map(history_item).collect();
+    let history: Vec<Value> = agent
+        .session
+        .messages
+        .iter()
+        .filter_map(history_item)
+        .collect();
     if !history.is_empty() {
         emit(json!({"event": "history", "items": history}));
     }
@@ -322,7 +335,11 @@ pub fn serve(mut config: Config, workspace: Option<String>, resume: Option<Strin
     let (tx_command, rx_command) = channel::<Command>();
     let (tx_answer, rx_answer) = channel::<Answer>();
     std::thread::spawn(move || read_stdin(tx_command, tx_answer));
-    let mut sink = JsonSink { answers: rx_answer, next_approval: 0, streaming: false };
+    let mut sink = JsonSink {
+        answers: rx_answer,
+        next_approval: 0,
+        streaming: false,
+    };
 
     while let Ok(command) = rx_command.recv() {
         match command {
@@ -350,7 +367,9 @@ pub fn serve(mut config: Config, workspace: Option<String>, resume: Option<Strin
                 CANCEL.store(false, Ordering::Relaxed);
                 match agent.compact_now(&CANCEL, &mut sink) {
                     Ok(report) => emit(json!({"event": "notice", "text": report})),
-                    Err(e) => emit(json!({"event": "notice", "text": format!("could not compact: {e}")})),
+                    Err(e) => {
+                        emit(json!({"event": "notice", "text": format!("could not compact: {e}")}))
+                    }
                 }
                 emit_state(&agent);
             }
@@ -389,7 +408,10 @@ pub fn serve(mut config: Config, workspace: Option<String>, resume: Option<Strin
                 emit(json!({"event": "calls", "items": items}));
             }
             Command::Call(n) => {
-                match calls::load(&agent.session.meta.id).into_iter().find(|r| r.n == n) {
+                match calls::load(&agent.session.meta.id)
+                    .into_iter()
+                    .find(|r| r.n == n)
+                {
                     // The same report the terminal pane shows, so the two
                     // surfaces can never drift.
                     Some(record) => emit(json!({
@@ -409,15 +431,13 @@ pub fn serve(mut config: Config, workspace: Option<String>, resume: Option<Strin
                     emit_state(&agent);
                 }
             }
-            Command::Mode(value) => {
-                match crate::config::PermissionMode::parse(&value) {
-                    Some(mode) => {
-                        agent.config.permission_mode = mode;
-                        emit_state(&agent);
-                    }
-                    None => emit(json!({"event": "error", "text": format!("unknown mode: {value}")})),
+            Command::Mode(value) => match crate::config::PermissionMode::parse(&value) {
+                Some(mode) => {
+                    agent.config.permission_mode = mode;
+                    emit_state(&agent);
                 }
-            }
+                None => emit(json!({"event": "error", "text": format!("unknown mode: {value}")})),
+            },
         }
     }
     0
@@ -441,11 +461,14 @@ mod tests {
         let assistant = Message {
             role: "assistant".into(),
             content: vec![
-                ContentBlock::Text { text: "Looking now.".into() },
+                ContentBlock::Text {
+                    text: "Looking now.".into(),
+                },
                 ContentBlock::ToolUse {
                     id: "1".into(),
                     name: "read_file".into(),
                     input: serde_json::json!({"path": "src/main.rs"}),
+                    signature: None,
                 },
             ],
         };

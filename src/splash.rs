@@ -100,7 +100,11 @@ impl Field {
     fn vignette(&self, col: usize, row: usize) -> f32 {
         let from_side = col.min(self.cols.saturating_sub(1) - col);
         let side = ((from_side as f32 + 0.5) / 4.0).min(1.0);
-        let sky = if (SKY..SKY + WORD_ROWS).contains(&row) { 1.0 } else { 0.5 };
+        let sky = if (SKY..SKY + WORD_ROWS).contains(&row) {
+            1.0
+        } else {
+            0.5
+        };
         side * sky
     }
 
@@ -209,8 +213,18 @@ pub fn show(theme: &Theme, version: &str, subtitle: &str) {
 
     let indent = " ".repeat(PAD_LEFT * CELL);
     let _ = writeln!(out, "{}", field.horizon(theme));
-    let _ = writeln!(out, "{indent}{}v{version} · {subtitle}{}", theme.dim, theme.reset());
-    let _ = writeln!(out, "{indent}{}/help for commands{}", theme.dim, theme.reset());
+    let _ = writeln!(
+        out,
+        "{indent}{}v{version} · {subtitle}{}",
+        theme.dim,
+        theme.reset()
+    );
+    let _ = writeln!(
+        out,
+        "{indent}{}/help for commands{}",
+        theme.dim,
+        theme.reset()
+    );
     let _ = out.flush();
 }
 
@@ -282,7 +296,11 @@ mod tests {
     use super::*;
 
     fn field(seed: u64) -> Field {
-        Field { cols: PAD_LEFT + WORD_COLS + PAD_RIGHT, rows: WORD_ROWS + SKY * 2, seed }
+        Field {
+            cols: PAD_LEFT + WORD_COLS + PAD_RIGHT,
+            rows: WORD_ROWS + SKY * 2,
+            seed,
+        }
     }
 
     #[test]

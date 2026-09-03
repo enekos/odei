@@ -42,7 +42,10 @@ fn row_of(end_row: u16, count: usize, i: usize) -> u16 {
 /// reports 0×0, and every width calculation downstream would collapse.
 fn size() -> (u16, u16) {
     let (width, height) = crossterm::terminal::size().unwrap_or((0, 0));
-    (if width < 20 { 80 } else { width }, if height < 6 { 24 } else { height })
+    (
+        if width < 20 { 80 } else { width },
+        if height < 6 { 24 } else { height },
+    )
 }
 
 /// Where the drawn block ended, if the terminal answered the cursor-position
@@ -128,7 +131,11 @@ fn spawn(program: &str, args: &[String]) -> bool {
 /// The viewer as one shell string, for splitters that hand their tail to
 /// `sh -c` rather than exec'ing an argv (tmux does; the others take `--`).
 fn shell_line(command: &[String]) -> String {
-    command.iter().map(|part| crate::calls::quote(part)).collect::<Vec<_>>().join(" ")
+    command
+        .iter()
+        .map(|part| crate::calls::quote(part))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Open `path` beside the current pane. Returns how it was opened, for the
@@ -145,15 +152,23 @@ fn open_pane(path: &Path) -> &'static str {
         Splitter::Tmux => {
             // One string: tmux would otherwise read the pager's own flags as
             // split-window options.
-            let args =
-                vec!["split-window".to_string(), "-h".into(), shell_line(&command)];
+            let args = vec![
+                "split-window".to_string(),
+                "-h".into(),
+                shell_line(&command),
+            ];
             if spawn("tmux", &args) {
                 return "tmux split";
             }
         }
         Splitter::Zellij => {
-            let mut args =
-                vec!["action".to_string(), "new-pane".into(), "--direction".into(), "right".into(), "--".into()];
+            let mut args = vec![
+                "action".to_string(),
+                "new-pane".into(),
+                "--direction".into(),
+                "right".into(),
+                "--".into(),
+            ];
             args.extend(command.clone());
             if spawn("zellij", &args) {
                 return "zellij pane";
@@ -202,8 +217,10 @@ fn open_pane(path: &Path) -> &'static str {
 fn report_path(session_id: &str, n: usize) -> PathBuf {
     let dir = crate::config::odei_home().join("calls");
     let _ = std::fs::create_dir_all(&dir);
-    let safe: String =
-        session_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    let safe: String = session_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
     dir.join(format!("{safe}-call-{n}.txt"))
 }
 
@@ -213,7 +230,11 @@ pub fn show(theme: &Theme, session_id: &str, n: usize) -> bool {
     let Some(record) = records.iter().find(|r| r.n == n) else {
         let known = records.last().map(|r| r.n).unwrap_or(0);
         if known == 0 {
-            println!("{}no tool calls in this session yet{}", theme.dim, theme.reset());
+            println!(
+                "{}no tool calls in this session yet{}",
+                theme.dim,
+                theme.reset()
+            );
         } else {
             println!(
                 "{}no call #{n} in this session (calls are #1–#{known}){}",
@@ -237,7 +258,11 @@ fn show_record(theme: &Theme, session_id: &str, record: &Record) {
     let text = calls::report(record, measure);
     let path = report_path(session_id, record.n);
     if let Err(e) = std::fs::write(&path, &text) {
-        println!("{}cannot write the report: {e}{}", theme.warning, theme.reset());
+        println!(
+            "{}cannot write the report: {e}{}",
+            theme.warning,
+            theme.reset()
+        );
         return;
     }
     let how = open_pane(&path);
@@ -258,7 +283,11 @@ fn show_record(theme: &Theme, session_id: &str, record: &Record) {
 pub fn picker(theme: &Theme, session_id: &str) {
     let records = calls::load(session_id);
     if records.is_empty() {
-        println!("{}no tool calls in this session yet{}", theme.dim, theme.reset());
+        println!(
+            "{}no tool calls in this session yet{}",
+            theme.dim,
+            theme.reset()
+        );
         return;
     }
     let (width, height) = size();
@@ -269,7 +298,12 @@ pub fn picker(theme: &Theme, session_id: &str) {
     if crossterm::terminal::enable_raw_mode().is_err() {
         // No terminal control: print the list and let /call N do the rest.
         for record in offered {
-            println!("{}{}{}", theme.dim, fit(&calls::summary_line(record), width), theme.reset());
+            println!(
+                "{}{}{}",
+                theme.dim,
+                fit(&calls::summary_line(record), width),
+                theme.reset()
+            );
         }
         println!("{}open one with /call N{}", theme.dim, theme.reset());
         return;
@@ -279,14 +313,27 @@ pub fn picker(theme: &Theme, session_id: &str) {
     let header = if hidden > 0 {
         format!("● {show_count} recent tool calls ({hidden} earlier — /call N)")
     } else {
-        format!("● {show_count} tool call{}", if show_count == 1 { "" } else { "s" })
+        format!(
+            "● {show_count} tool call{}",
+            if show_count == 1 { "" } else { "s" }
+        )
     };
     let footer = "click a call · ↑↓ then ⏎ · type a number · esc to leave";
 
     // Printed before the rows so the row arithmetic below can find them.
-    print!("\r\n{}{}{}\r\n", theme.dim, fit(&header, width), theme.reset());
+    print!(
+        "\r\n{}{}{}\r\n",
+        theme.dim,
+        fit(&header, width),
+        theme.reset()
+    );
     for record in offered {
-        print!("{}  {}{}\r\n", theme.dim, fit(&calls::summary_line(record), width), theme.reset());
+        print!(
+            "{}  {}{}\r\n",
+            theme.dim,
+            fit(&calls::summary_line(record), width),
+            theme.reset()
+        );
     }
     print!("{}{}{}\r\n", theme.dim, fit(footer, width), theme.reset());
     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -317,7 +364,11 @@ pub fn picker(theme: &Theme, session_id: &str) {
 
     let draw = |i: usize, active: bool| {
         let record = &offered[i];
-        let style = if active { theme.selected_completion } else { theme.dim };
+        let style = if active {
+            theme.selected_completion
+        } else {
+            theme.dim
+        };
         let marker = if active { '›' } else { ' ' };
         // Absolute placement, so redrawing never disturbs anything else.
         print!(
@@ -354,8 +405,10 @@ pub fn picker(theme: &Theme, session_id: &str) {
                     typed.push(c);
                     // A typed number addresses a call by its #N, which may be
                     // one the picker isn't showing.
-                    if let Some(i) =
-                        typed.parse::<usize>().ok().and_then(|n| offered.iter().position(|r| r.n == n))
+                    if let Some(i) = typed
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|n| offered.iter().position(|r| r.n == n))
                     {
                         draw(selected, false);
                         selected = i;
@@ -419,8 +472,14 @@ mod tests {
         let paged = pager(false);
         assert_eq!(paged[0], "less");
         assert!(paged.contains(&"-R".to_string()));
-        assert!(!paged.contains(&"-F".to_string()), "a split pane must not self-close");
-        assert!(pager(true).contains(&"-F".to_string()), "inline paging should quit if short");
+        assert!(
+            !paged.contains(&"-F".to_string()),
+            "a split pane must not self-close"
+        );
+        assert!(
+            pager(true).contains(&"-F".to_string()),
+            "inline paging should quit if short"
+        );
 
         std::env::set_var("PAGER", "bat --plain");
         assert_eq!(pager(false), vec!["bat", "--plain"]);
@@ -445,11 +504,7 @@ mod tests {
 
     #[test]
     fn tmux_gets_one_quoted_string_not_loose_flags() {
-        let line = shell_line(&[
-            "less".into(),
-            "-R".into(),
-            "/tmp/a b/call-1.txt".into(),
-        ]);
+        let line = shell_line(&["less".into(), "-R".into(), "/tmp/a b/call-1.txt".into()]);
         assert_eq!(line, "less -R '/tmp/a b/call-1.txt'");
     }
 
@@ -457,6 +512,9 @@ mod tests {
     fn report_paths_are_confined_to_the_profile() {
         let path = report_path("../../etc/passwd", 3);
         assert!(path.starts_with(crate::config::odei_home().join("calls")));
-        assert_eq!(path.file_name().unwrap().to_string_lossy(), "etcpasswd-call-3.txt");
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            "etcpasswd-call-3.txt"
+        );
     }
 }

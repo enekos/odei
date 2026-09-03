@@ -78,17 +78,30 @@ fn render(messages: &[Message]) -> String {
         for block in &message.content {
             match block {
                 ContentBlock::Text { text } => {
-                    let body = if message.role == "user" { user_prompt_only(text) } else { text };
+                    let body = if message.role == "user" {
+                        user_prompt_only(text)
+                    } else {
+                        text
+                    };
                     if !body.trim().is_empty() {
                         out.push_str(&format!("{}: {}\n", message.role, body.trim()));
                     }
                 }
                 ContentBlock::ToolUse { name, input, .. } => {
                     let args = serde_json::to_string(input).unwrap_or_default();
-                    out.push_str(&format!("assistant called {name}({})\n", excerpt(&args, 200)));
+                    out.push_str(&format!(
+                        "assistant called {name}({})\n",
+                        excerpt(&args, 200)
+                    ));
                 }
-                ContentBlock::ToolResult { content, is_error, .. } => {
-                    let tag = if *is_error { "tool failed" } else { "tool returned" };
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => {
+                    let tag = if *is_error {
+                        "tool failed"
+                    } else {
+                        "tool returned"
+                    };
                     out.push_str(&format!("{tag}: {}\n", excerpt(content, RESULT_EXCERPT)));
                 }
             }
@@ -110,8 +123,8 @@ pub fn summarize(
     let request = vec![Message::user_text(&format!(
         "Compact this session history:\n\n{transcript}"
     ))];
-    let summary = provider::complete(config, SUMMARY_SYSTEM, &request, cancel)
-        .map_err(|e| e.to_string())?;
+    let summary =
+        provider::complete(config, SUMMARY_SYSTEM, &request, cancel).map_err(|e| e.to_string())?;
     if summary.trim().is_empty() {
         return Err("the model returned an empty summary".into());
     }
@@ -134,6 +147,7 @@ mod tests {
                 id: "t1".into(),
                 name: "read_file".into(),
                 input: json!({"path": "a.rs"}),
+                signature: None,
             }],
         }
     }
@@ -152,23 +166,29 @@ mod tests {
     #[test]
     fn short_sessions_are_left_alone() {
         assert_eq!(plan_cut(&[user("one")]), None);
-        assert_eq!(plan_cut(&[user("one"), assistant_tool_use(), tool_result()]), None);
+        assert_eq!(
+            plan_cut(&[user("one"), assistant_tool_use(), tool_result()]),
+            None
+        );
     }
 
     #[test]
     fn cut_lands_on_a_user_turn_never_on_a_tool_result() {
         let messages = vec![
-            user("first"),            // 0
-            assistant_tool_use(),     // 1
-            tool_result(),            // 2
-            user("second"),           // 3
-            assistant_tool_use(),     // 4
-            tool_result(),            // 5
-            user("third"),            // 6
+            user("first"),        // 0
+            assistant_tool_use(), // 1
+            tool_result(),        // 2
+            user("second"),       // 3
+            assistant_tool_use(), // 4
+            tool_result(),        // 5
+            user("third"),        // 6
         ];
         let cut = plan_cut(&messages).expect("a cut");
         assert_eq!(cut, 3, "keeps the last two user turns");
-        assert!(is_user_turn(&messages[cut]), "retained history starts at a real user turn");
+        assert!(
+            is_user_turn(&messages[cut]),
+            "retained history starts at a real user turn"
+        );
     }
 
     #[test]

@@ -43,7 +43,11 @@ impl Session {
         let dir = crate::config::sessions_dir();
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join(format!("{id}.jsonl"));
-        let session = Session { meta, messages: Vec::new(), path };
+        let session = Session {
+            meta,
+            messages: Vec::new(),
+            path,
+        };
         session.rewrite();
         session
     }
@@ -62,7 +66,11 @@ impl Session {
                 messages.push(message);
             }
         }
-        Some(Session { meta, messages, path })
+        Some(Session {
+            meta,
+            messages,
+            path,
+        })
     }
 
     pub fn append(&mut self, message: Message) {
@@ -108,16 +116,22 @@ pub struct SessionSummary {
 pub fn list() -> Vec<SessionSummary> {
     let dir = crate::config::sessions_dir();
     let mut summaries = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else { return summaries };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return summaries;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         let mut lines = text.lines();
         let Some(first) = lines.next() else { continue };
-        let Ok(meta) = serde_json::from_str::<SessionMeta>(first) else { continue };
+        let Ok(meta) = serde_json::from_str::<SessionMeta>(first) else {
+            continue;
+        };
         let modified = entry
             .metadata()
             .and_then(|m| m.modified())
@@ -136,7 +150,10 @@ pub fn list() -> Vec<SessionSummary> {
 
 pub fn latest_for_workspace(workspace: &std::path::Path) -> Option<String> {
     let workspace = workspace.display().to_string();
-    list().into_iter().find(|s| s.workspace == workspace).map(|s| s.id)
+    list()
+        .into_iter()
+        .find(|s| s.workspace == workspace)
+        .map(|s| s.id)
 }
 
 pub fn record_usage(model: &str, usage: Usage) {
