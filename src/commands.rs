@@ -36,7 +36,9 @@ pub fn search_paths(workspace: &Path) -> Vec<(Scope, PathBuf)> {
 pub fn is_valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 pub fn find(workspace: &Path, name: &str) -> Option<UserCommand> {
@@ -45,12 +47,19 @@ pub fn find(workspace: &Path, name: &str) -> Option<UserCommand> {
     }
     for (scope, dir) in search_paths(workspace) {
         let path = dir.join(format!("{name}.md"));
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         let (description, body) = split_front_matter(&text);
         if body.trim().is_empty() {
             continue;
         }
-        return Some(UserCommand { name: name.to_string(), description, scope, body });
+        return Some(UserCommand {
+            name: name.to_string(),
+            description,
+            scope,
+            body,
+        });
     }
     None
 }
@@ -58,7 +67,9 @@ pub fn find(workspace: &Path, name: &str) -> Option<UserCommand> {
 pub fn list(workspace: &Path) -> Vec<UserCommand> {
     let mut found: Vec<UserCommand> = Vec::new();
     for (scope, dir) in search_paths(workspace) {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         let mut names: Vec<String> = entries
             .flatten()
             .filter_map(|entry| {
@@ -159,10 +170,19 @@ mod tests {
 
     #[test]
     fn arguments_fill_placeholders_or_are_appended_when_there_are_none() {
-        assert_eq!(expand("Explain $ARGUMENTS please", "src/ui.rs"), "Explain src/ui.rs please");
-        assert_eq!(expand("Compare $1 with $2", "a.rs b.rs"), "Compare a.rs with b.rs");
+        assert_eq!(
+            expand("Explain $ARGUMENTS please", "src/ui.rs"),
+            "Explain src/ui.rs please"
+        );
+        assert_eq!(
+            expand("Compare $1 with $2", "a.rs b.rs"),
+            "Compare a.rs with b.rs"
+        );
         assert_eq!(expand("Compare $1 with $2", "a.rs"), "Compare a.rs with");
-        assert_eq!(expand("Run the tests", "in the ui crate"), "Run the tests\n\nin the ui crate");
+        assert_eq!(
+            expand("Run the tests", "in the ui crate"),
+            "Run the tests\n\nin the ui crate"
+        );
         assert_eq!(expand("Run the tests", ""), "Run the tests");
     }
 

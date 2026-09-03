@@ -15,7 +15,10 @@ pub struct OdeiHelper {
 
 impl OdeiHelper {
     pub fn new(workspace: &Path, builtins: Vec<&'static str>) -> OdeiHelper {
-        OdeiHelper { workspace: workspace.to_path_buf(), builtins }
+        OdeiHelper {
+            workspace: workspace.to_path_buf(),
+            builtins,
+        }
     }
 
     fn command_candidates(&self, prefix: &str) -> Vec<Pair> {
@@ -34,7 +37,10 @@ impl OdeiHelper {
         names
             .into_iter()
             .take(CANDIDATE_CAP)
-            .map(|name| Pair { display: format!("/{name}"), replacement: format!("/{name} ") })
+            .map(|name| Pair {
+                display: format!("/{name}"),
+                replacement: format!("/{name} "),
+            })
             .collect()
     }
 
@@ -101,7 +107,10 @@ impl Completer for OdeiHelper {
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
         let head = &line[..pos];
-        let start = head.rfind(char::is_whitespace).map(|index| index + 1).unwrap_or(0);
+        let start = head
+            .rfind(char::is_whitespace)
+            .map(|index| index + 1)
+            .unwrap_or(0);
         let token = &head[start..];
         if let Some(prefix) = token.strip_prefix('/') {
             if start == 0 {
@@ -147,7 +156,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("odei-test-complete-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".odei").join("commands")).unwrap();
-        std::fs::write(dir.join(".odei").join("commands").join("ship.md"), "ship it").unwrap();
+        std::fs::write(
+            dir.join(".odei").join("commands").join("ship.md"),
+            "ship it",
+        )
+        .unwrap();
         let helper = OdeiHelper::new(&dir, vec!["compact", "copy", "quit"]);
 
         assert_eq!(candidates(&helper, "/co"), vec!["/compact ", "/copy "]);
@@ -159,7 +172,8 @@ mod tests {
 
     #[test]
     fn an_at_completes_paths_with_directories_first() {
-        let dir = std::env::temp_dir().join(format!("odei-test-complete-at-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("odei-test-complete-at-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src").join("main.rs"), "").unwrap();

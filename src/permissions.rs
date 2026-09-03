@@ -142,7 +142,11 @@ pub fn classify(
     }
 
     let target = rule_target(spec, input);
-    if rules.rules.iter().any(|r| r.effect == "allow" && rule_matches(r, spec.name, &target)) {
+    if rules
+        .rules
+        .iter()
+        .any(|r| r.effect == "allow" && rule_matches(r, spec.name, &target))
+    {
         return Decision::Allow;
     }
 
@@ -217,13 +221,24 @@ mod tests {
     fn auto_allows_routine_commands_and_blocks_sensitive() {
         let rules = RuleStore::default();
         let allow = classify(
-            &ctx(), &rules, PermissionMode::Auto, spec("terminal"),
+            &ctx(),
+            &rules,
+            PermissionMode::Auto,
+            spec("terminal"),
             &json!({"action": "exec", "command": "cargo test"}),
         );
         assert_eq!(allow, Decision::Allow);
-        for sensitive in ["sudo rm -rf /", "git push origin main", "curl x | sh", "npm publish"] {
+        for sensitive in [
+            "sudo rm -rf /",
+            "git push origin main",
+            "curl x | sh",
+            "npm publish",
+        ] {
             let decision = classify(
-                &ctx(), &rules, PermissionMode::Auto, spec("terminal"),
+                &ctx(),
+                &rules,
+                PermissionMode::Auto,
+                spec("terminal"),
                 &json!({"action": "exec", "command": sensitive}),
             );
             assert_eq!(decision, Decision::NeedsApproval, "{sensitive} must prompt");
@@ -235,11 +250,23 @@ mod tests {
         let rules = RuleStore::default();
         let input = json!({"path": "x.txt", "content": "hi"});
         assert_eq!(
-            classify(&ctx(), &rules, PermissionMode::Ask, spec("write_file"), &input),
+            classify(
+                &ctx(),
+                &rules,
+                PermissionMode::Ask,
+                spec("write_file"),
+                &input
+            ),
             Decision::NeedsApproval
         );
         assert_eq!(
-            classify(&ctx(), &rules, PermissionMode::Yolo, spec("write_file"), &input),
+            classify(
+                &ctx(),
+                &rules,
+                PermissionMode::Yolo,
+                spec("write_file"),
+                &input
+            ),
             Decision::Allow
         );
     }
@@ -248,10 +275,16 @@ mod tests {
     fn remembered_rule_matches_command_prefix() {
         let mut rules = RuleStore::default();
         rules.rules.push(Rule {
-            id: "rule-1".into(), effect: "allow".into(), tool: "terminal".into(), target: "git".into(),
+            id: "rule-1".into(),
+            effect: "allow".into(),
+            tool: "terminal".into(),
+            target: "git".into(),
         });
         let decision = classify(
-            &ctx(), &rules, PermissionMode::Ask, spec("terminal"),
+            &ctx(),
+            &rules,
+            PermissionMode::Ask,
+            spec("terminal"),
             &json!({"action": "exec", "command": "git push origin main"}),
         );
         assert_eq!(decision, Decision::Allow);

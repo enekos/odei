@@ -62,7 +62,9 @@ impl Store {
 
     /// Drop results from earlier sessions that nothing can reference anymore.
     fn prune(&self) {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
         let now = SystemTime::now();
         for entry in entries.flatten() {
             let stale = entry
@@ -170,7 +172,9 @@ pub fn read_tool_result(ctx: &ToolContext, input: &Value) -> ToolOutcome {
             from = at + query.len();
         }
         return if hits == 0 {
-            ToolOutcome::ok(format!("{query:?} does not appear in {handle} ({total} bytes)"))
+            ToolOutcome::ok(format!(
+                "{query:?} does not appear in {handle} ({total} bytes)"
+            ))
         } else {
             ToolOutcome::ok(format!(
                 "{hits} match{} for {query:?} in {handle} ({total} bytes):\n\n{out}",
@@ -185,12 +189,18 @@ pub fn read_tool_result(ctx: &ToolContext, input: &Value) -> ToolOutcome {
             "offset {offset} is past the end of {handle} ({total} bytes)"
         ));
     }
-    let length = input["length"].as_u64().map(|v| (v as usize).min(READ_MAX)).unwrap_or(READ_DEFAULT);
+    let length = input["length"]
+        .as_u64()
+        .map(|v| (v as usize).min(READ_MAX))
+        .unwrap_or(READ_DEFAULT);
     let start = char_boundary_at_or_after(&text, offset);
     let end = char_boundary_at_or_before(&text, (start + length).min(total));
     let mut out = text[start..end].to_string();
     if end < total {
-        let _ = write!(out, "\n\n[bytes {start}–{end} of {total}; continue with offset={end}]");
+        let _ = write!(
+            out,
+            "\n\n[bytes {start}–{end} of {total}; continue with offset={end}]"
+        );
     } else {
         let _ = write!(out, "\n\n[bytes {start}–{end} of {total}; end of result]");
     }
@@ -227,7 +237,11 @@ mod tests {
         let head = read_tool_result(&ctx, &json!({"handle": handle, "length": 64}));
         assert!(!head.is_error, "{}", head.text);
         assert!(head.text.starts_with("line 1\n"), "{}", head.text);
-        assert!(head.text.contains("continue with offset=64"), "{}", head.text);
+        assert!(
+            head.text.contains("continue with offset=64"),
+            "{}",
+            head.text
+        );
 
         let mid = read_tool_result(&ctx, &json!({"handle": handle, "offset": 64, "length": 32}));
         assert!(!mid.is_error, "{}", mid.text);
@@ -240,13 +254,20 @@ mod tests {
     #[test]
     fn queries_return_windows_with_offsets() {
         let ctx = ToolContext::new(std::path::Path::new("/tmp"));
-        let body = format!("{}\nerror: it broke\n{}", "noise\n".repeat(2000), "more\n".repeat(2000));
+        let body = format!(
+            "{}\nerror: it broke\n{}",
+            "noise\n".repeat(2000),
+            "more\n".repeat(2000)
+        );
         let handle = ctx.results.put(&body).unwrap();
 
         let hit = read_tool_result(&ctx, &json!({"handle": handle, "query": "error:"}));
         assert!(!hit.is_error, "{}", hit.text);
         assert!(hit.text.contains("error: it broke"), "{}", hit.text);
-        assert!(hit.text.contains("--- offset "), "windows are labelled with offsets");
+        assert!(
+            hit.text.contains("--- offset "),
+            "windows are labelled with offsets"
+        );
 
         let miss = read_tool_result(&ctx, &json!({"handle": handle, "query": "not-in-there"}));
         assert!(!miss.is_error);

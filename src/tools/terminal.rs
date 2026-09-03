@@ -100,7 +100,11 @@ fn bounded(text: String) -> String {
         return text;
     }
     let cut = text.len() - OUTPUT_CAP;
-    let boundary = text.char_indices().map(|(i, _)| i).find(|&i| i >= cut).unwrap_or(cut);
+    let boundary = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .find(|&i| i >= cut)
+        .unwrap_or(cut);
     format!("[earlier output dropped]\n{}", &text[boundary..])
 }
 
@@ -135,7 +139,10 @@ fn build_command(ctx: &ToolContext, input: &Value, interactive_default: bool) ->
         c
     };
 
-    let cwd = input["cwd"].as_str().map(|c| ctx.resolve(c)).unwrap_or_else(|| ctx.workspace_root.clone());
+    let cwd = input["cwd"]
+        .as_str()
+        .map(|c| ctx.resolve(c))
+        .unwrap_or_else(|| ctx.workspace_root.clone());
     cmd.cwd(cwd);
     cmd.env("TERM", "xterm-256color");
     if !interactive_default {
@@ -187,7 +194,10 @@ fn exec(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         return ToolOutcome::err("exec requires a command");
     }
     let timeout = Duration::from_millis(
-        input["timeout_ms"].as_u64().unwrap_or(EXEC_DEFAULT_TIMEOUT_MS).min(EXEC_MAX_TIMEOUT_MS),
+        input["timeout_ms"]
+            .as_u64()
+            .unwrap_or(EXEC_DEFAULT_TIMEOUT_MS)
+            .min(EXEC_MAX_TIMEOUT_MS),
     );
 
     let pair = match native_pty_system().openpty(pty_size(None, None)) {
@@ -270,7 +280,10 @@ fn start(ctx: &ToolContext, input: &Value) -> ToolOutcome {
     };
 
     let raw_command = input["command"].as_str().unwrap_or_default();
-    let id = format!("terminal-{}", ctx.terminal.next_id.fetch_add(1, Ordering::Relaxed) + 1);
+    let id = format!(
+        "terminal-{}",
+        ctx.terminal.next_id.fetch_add(1, Ordering::Relaxed) + 1
+    );
     let session = Session {
         child,
         master: pair.master,
@@ -284,10 +297,18 @@ fn start(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         },
         exit: None,
     };
-    ctx.terminal.sessions.lock().unwrap().insert(id.clone(), session);
+    ctx.terminal
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(id.clone(), session);
     ToolOutcome::ok(format!(
         "started session {id} running {}. Use action=read with this session_id to collect output.",
-        if raw_command.is_empty() { "an interactive shell" } else { raw_command }
+        if raw_command.is_empty() {
+            "an interactive shell"
+        } else {
+            raw_command
+        }
     ))
 }
 
@@ -348,7 +369,11 @@ fn write(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         return ToolOutcome::err("write requires text");
     };
     match with_session(ctx, input, |session| {
-        match session.writer.write_all(text.as_bytes()).and_then(|()| session.writer.flush()) {
+        match session
+            .writer
+            .write_all(text.as_bytes())
+            .and_then(|()| session.writer.flush())
+        {
             Ok(()) => ToolOutcome::ok(format!("wrote {} bytes to the session", text.len())),
             Err(e) => ToolOutcome::err(format!("cannot write to the session: {e}")),
         }
@@ -360,7 +385,10 @@ fn write(ctx: &ToolContext, input: &Value) -> ToolOutcome {
 
 fn wait(ctx: &ToolContext, input: &Value) -> ToolOutcome {
     let ceiling = Duration::from_millis(
-        input["wait_ceiling_ms"].as_u64().unwrap_or(30_000).min(EXEC_MAX_TIMEOUT_MS),
+        input["wait_ceiling_ms"]
+            .as_u64()
+            .unwrap_or(30_000)
+            .min(EXEC_MAX_TIMEOUT_MS),
     );
     match with_session(ctx, input, |session| {
         if let Some(code) = session.exit {
@@ -425,12 +453,14 @@ fn signal(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         let pid = pid as i32;
         // The child leads its own process group under a pty, so signalling the
         // group reaches anything it spawned; fall back to the process itself.
-        let delivered =
-            unsafe { libc::kill(-pid, signo) == 0 || libc::kill(pid, signo) == 0 };
+        let delivered = unsafe { libc::kill(-pid, signo) == 0 || libc::kill(pid, signo) == 0 };
         if delivered {
             ToolOutcome::ok(format!("delivered {name}"))
         } else {
-            ToolOutcome::err(format!("could not signal: {}", std::io::Error::last_os_error()))
+            ToolOutcome::err(format!(
+                "could not signal: {}",
+                std::io::Error::last_os_error()
+            ))
         }
     }) {
         Ok(outcome) => outcome,
@@ -473,7 +503,9 @@ fn close(ctx: &ToolContext, input: &Value) -> ToolOutcome {
             if tail.trim().is_empty() {
                 ToolOutcome::ok(format!("closed session {id}"))
             } else {
-                ToolOutcome::ok(format!("closed session {id}. Output you had not read:\n{tail}"))
+                ToolOutcome::ok(format!(
+                    "closed session {id}. Output you had not read:\n{tail}"
+                ))
             }
         }
         None => ToolOutcome::err(format!("unknown session_id: {id}")),
@@ -513,7 +545,11 @@ mod pty_tests {
             &json!({"action": "exec", "command": "test -t 1 && echo IS_A_TTY || echo NOT_A_TTY"}),
         );
         assert!(!out.is_error, "{}", out.text);
-        assert!(out.text.contains("IS_A_TTY"), "stdout must be a tty: {}", out.text);
+        assert!(
+            out.text.contains("IS_A_TTY"),
+            "stdout must be a tty: {}",
+            out.text
+        );
     }
 
     #[test]
@@ -531,9 +567,17 @@ mod pty_tests {
         );
         assert!(!out.is_error, "{}", out.text);
         assert!(out.text.contains("red"), "{}", out.text);
-        assert!(!out.text.contains('\x1b'), "escapes should be gone: {:?}", out.text);
+        assert!(
+            !out.text.contains('\x1b'),
+            "escapes should be gone: {:?}",
+            out.text
+        );
         assert!(out.text.contains('c'), "{}", out.text);
-        assert!(!out.text.contains("a\rb"), "overwrites should collapse: {:?}", out.text);
+        assert!(
+            !out.text.contains("a\rb"),
+            "overwrites should collapse: {:?}",
+            out.text
+        );
     }
 
     #[test]
@@ -549,12 +593,19 @@ mod pty_tests {
             .expect("a session id")
             .to_string();
 
-        let wrote = terminal(&ctx, &json!({"action": "write", "session_id": id, "text": "ping\n"}));
+        let wrote = terminal(
+            &ctx,
+            &json!({"action": "write", "session_id": id, "text": "ping\n"}),
+        );
         assert!(!wrote.is_error, "{}", wrote.text);
         std::thread::sleep(Duration::from_millis(300));
 
         let read = terminal(&ctx, &json!({"action": "read", "session_id": id}));
-        assert!(read.text.contains("ping"), "session should echo input back: {}", read.text);
+        assert!(
+            read.text.contains("ping"),
+            "session should echo input back: {}",
+            read.text
+        );
         assert!(read.text.contains("running"), "{}", read.text);
 
         let listed = terminal(&ctx, &json!({"action": "list"}));
@@ -572,7 +623,11 @@ mod pty_tests {
         assert!(!out.is_error, "{}", out.text);
         eprintln!("captured {} bytes", out.text.len());
         assert!(out.text.contains("\n30000\n"), "the tail must survive");
-        assert!(out.text.len() > 150_000, "only captured {} bytes", out.text.len());
+        assert!(
+            out.text.len() > 150_000,
+            "only captured {} bytes",
+            out.text.len()
+        );
     }
 
     #[test]

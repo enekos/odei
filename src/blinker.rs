@@ -45,7 +45,10 @@ impl Blinker {
 
         let (tx, rx) = mpsc::channel();
         let join = std::thread::spawn(move || run(theme, rx));
-        Blinker { stop: Some(tx), join: Some(join) }
+        Blinker {
+            stop: Some(tx),
+            join: Some(join),
+        }
     }
 
     /// Start a blinker only where one can draw. Non-interactive runs and

@@ -65,7 +65,9 @@ impl Sink for RecordSink {
     }
 
     fn request_approval(&mut self, tool: &str, label: &str, _detail: &str) -> Approval {
-        self.notices.push(format!("denied {label} ({tool}): nobody here to approve it"));
+        self.notices.push(format!(
+            "denied {label} ({tool}): nobody here to approve it"
+        ));
         Approval::Deny
     }
 }
@@ -149,10 +151,16 @@ fn report_failure(format: OutputFormat, message: &str) -> i32 {
         OutputFormat::Text => eprintln!("odei: {message}"),
         OutputFormat::Json => {
             let body = json!({"ok": false, "error": message});
-            println!("{}", serde_json::to_string_pretty(&body).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&body).unwrap_or_default()
+            );
         }
         OutputFormat::StreamJson => {
-            println!("{}", json!({"event": "result", "ok": false, "error": message}));
+            println!(
+                "{}",
+                json!({"event": "result", "ok": false, "error": message})
+            );
         }
     }
     1
@@ -192,7 +200,10 @@ pub fn ask(config: Config, prompt: &str, format: OutputFormat) -> i32 {
             let mut report = turn_report(&agent, &model, started.elapsed(), &result);
             report["tools"] = json!(sink.tools);
             report["notices"] = json!(sink.notices);
-            println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).unwrap_or_default()
+            );
             i32::from(result.is_err())
         }
         OutputFormat::StreamJson => {
@@ -215,7 +226,9 @@ pub fn setup_flow(provider: Option<&str>) -> Result<(), String> {
     match provider {
         crate::config::Provider::Kimi => {
             println!("Set up Kimi Code access.");
-            println!("Create an API key in the Kimi Code Console (kimi.com/code), then paste it here.");
+            println!(
+                "Create an API key in the Kimi Code Console (kimi.com/code), then paste it here."
+            );
         }
         crate::config::Provider::Gemini => {
             println!("Set up Gemini access.");
@@ -225,7 +238,9 @@ pub fn setup_flow(provider: Option<&str>) -> Result<(), String> {
     print!("API key: ");
     let _ = std::io::stdout().flush();
     let mut key = String::new();
-    std::io::stdin().read_line(&mut key).map_err(|e| e.to_string())?;
+    std::io::stdin()
+        .read_line(&mut key)
+        .map_err(|e| e.to_string())?;
     let key = key.trim().to_string();
     if key.is_empty() {
         return Err("no key entered".into());
@@ -236,7 +251,10 @@ pub fn setup_flow(provider: Option<&str>) -> Result<(), String> {
         crate::config::Provider::Gemini => stored.gemini_api_key = Some(key),
     }
     crate::config::save_stored(&stored).map_err(|e| e.to_string())?;
-    println!("Saved to {}", crate::config::odei_home().join("config.json").display());
+    println!(
+        "Saved to {}",
+        crate::config::odei_home().join("config.json").display()
+    );
     Ok(())
 }
 
@@ -248,7 +266,10 @@ pub fn status(config: &Config) -> i32 {
     println!("base url    {}", config.base_url);
     println!("key source  {}", config.key_source);
     println!("permissions {}", config.permission_mode.label());
-    println!("cache       {}", if config.prompt_cache { "on" } else { "off" });
+    println!(
+        "cache       {}",
+        if config.prompt_cache { "on" } else { "off" }
+    );
     println!("profile     {}", crate::config::odei_home().display());
     0
 }
@@ -256,20 +277,29 @@ pub fn status(config: &Config) -> i32 {
 pub fn doctor(config: &Config) -> i32 {
     let mut failures = 0;
     let check = |ok: bool, label: &str, detail: &str| {
-        println!("{} {label}{}", if ok { "✓" } else { "✗" }, if detail.is_empty() {
-            String::new()
-        } else {
-            format!(" — {detail}")
-        });
+        println!(
+            "{} {label}{}",
+            if ok { "✓" } else { "✗" },
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(" — {detail}")
+            }
+        );
         !ok as i32
     };
     failures += check(config.api_key.is_some(), "API key", config.key_source);
     failures += check(
-        crate::config::odei_home().exists() || std::fs::create_dir_all(crate::config::odei_home()).is_ok(),
+        crate::config::odei_home().exists()
+            || std::fs::create_dir_all(crate::config::odei_home()).is_ok(),
         "profile directory",
         &crate::config::odei_home().display().to_string(),
     );
-    failures += check(config.workspace_root.exists(), "workspace", &config.workspace_root.display().to_string());
+    failures += check(
+        config.workspace_root.exists(),
+        "workspace",
+        &config.workspace_root.display().to_string(),
+    );
     if config.api_key.is_some() {
         let label = format!("{} connectivity", config.provider.label());
         match crate::provider::check_connectivity(config) {
@@ -335,13 +365,20 @@ pub fn upgrade(check_only: bool) -> i32 {
         println!("Run `odei upgrade` to install it.");
         return 0;
     }
-    let command = format!("curl -fsSL --proto '=https' --tlsv1.2 {} | sh", installer_url(&latest));
+    let command = format!(
+        "curl -fsSL --proto '=https' --tlsv1.2 {} | sh",
+        installer_url(&latest)
+    );
     if which("curl").is_none() || which("sh").is_none() {
         println!("Needs curl and sh. Install it by hand:\n  {command}");
         return 1;
     }
     println!("Running the installer published with {latest}:\n  {command}\n");
-    match std::process::Command::new("sh").arg("-c").arg(&command).status() {
+    match std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .status()
+    {
         Ok(status) if status.success() => 0,
         Ok(status) => {
             eprintln!("odei: the installer exited with {status}");
@@ -356,7 +393,9 @@ pub fn upgrade(check_only: bool) -> i32 {
 
 fn which(program: &str) -> Option<std::path::PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|dir| dir.join(program)).find(|candidate| candidate.is_file())
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
 }
 
 pub fn models() -> i32 {
@@ -375,7 +414,10 @@ pub fn sessions() -> i32 {
     for s in sessions {
         let title = s.title.unwrap_or_else(|| "(untitled)".into());
         let age = chrono::DateTime::<chrono::Local>::from(s.modified).format("%Y-%m-%d %H:%M");
-        println!("{}  {age}  {title}  {} messages  {}", s.id, s.messages, s.workspace);
+        println!(
+            "{}  {age}  {title}  {} messages  {}",
+            s.id, s.messages, s.workspace
+        );
     }
     0
 }
@@ -385,7 +427,9 @@ pub fn help() -> i32 {
     println!();
     println!("usage:");
     println!("  odei                       interactive session in the current workspace");
-    println!("  odei ask \"<prompt>\"        single noninteractive request; stdin joins the prompt");
+    println!(
+        "  odei ask \"<prompt>\"        single noninteractive request; stdin joins the prompt"
+    );
     println!("       [--output-format text|json|stream-json]");
     println!("                             text (default), one JSON report, or NDJSON events");
     println!("  odei sessions              list saved sessions");

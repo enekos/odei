@@ -25,7 +25,17 @@ pub(crate) fn display_rel(ctx: &ToolContext, path: &Path) -> String {
 pub(crate) fn skip_dir(name: &str) -> bool {
     matches!(
         name,
-        ".git" | "node_modules" | "target" | "zig-out" | "zig-cache" | ".zig-cache" | "dist" | ".next" | ".venv" | "__pycache__" | ".DS_Store"
+        ".git"
+            | "node_modules"
+            | "target"
+            | "zig-out"
+            | "zig-cache"
+            | ".zig-cache"
+            | "dist"
+            | ".next"
+            | ".venv"
+            | "__pycache__"
+            | ".DS_Store"
     )
 }
 
@@ -42,7 +52,10 @@ pub fn read_file(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         Err(e) => return ToolOutcome::err(format!("cannot read {path}: {e}")),
     };
 
-    let start_line = input["start_line"].as_u64().map(|v| v.max(1) as usize).unwrap_or(1);
+    let start_line = input["start_line"]
+        .as_u64()
+        .map(|v| v.max(1) as usize)
+        .unwrap_or(1);
     let line_count = input["line_count"]
         .as_u64()
         .map(|v| (v as usize).clamp(1, READ_LINE_CAP))
@@ -53,7 +66,12 @@ pub fn read_file(ctx: &ToolContext, input: &Value) -> ToolOutcome {
     let mut bytes = 0usize;
     let mut emitted = 0usize;
     let mut truncated_by_bytes = false;
-    for (i, line) in text.lines().enumerate().skip(start_line - 1).take(line_count) {
+    for (i, line) in text
+        .lines()
+        .enumerate()
+        .skip(start_line - 1)
+        .take(line_count)
+    {
         let numbered = format!("{:>6}\t{}\n", i + 1, line);
         if bytes + numbered.len() > READ_BYTE_CAP {
             truncated_by_bytes = true;
@@ -205,7 +223,9 @@ pub fn list_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
 }
 
 fn build_matcher(pattern: &str) -> Result<GlobMatcher, String> {
-    Glob::new(pattern).map(|g| g.compile_matcher()).map_err(|e| format!("invalid glob pattern: {e}"))
+    Glob::new(pattern)
+        .map(|g| g.compile_matcher())
+        .map_err(|e| format!("invalid glob pattern: {e}"))
 }
 
 pub fn glob_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
@@ -253,7 +273,10 @@ pub fn glob_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
     matches.sort();
     let mut out = matches.join("\n");
     if count > GLOB_MATCH_CAP {
-        let _ = write!(out, "\n[{GLOB_MATCH_CAP} of {count} matches shown; narrow the pattern]");
+        let _ = write!(
+            out,
+            "\n[{GLOB_MATCH_CAP} of {count} matches shown; narrow the pattern]"
+        );
     }
     ToolOutcome::ok(out)
 }
@@ -273,8 +296,10 @@ pub fn grep_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         .map(|v| (v as usize).clamp(1, GREP_RESULT_CAP))
         .unwrap_or(GREP_RESULT_CAP);
     let offset = input["offset"].as_u64().unwrap_or(0) as usize;
-    let context_lines =
-        input["context_lines"].as_u64().map(|v| (v as usize).min(CONTEXT_LINES_CAP)).unwrap_or(0);
+    let context_lines = input["context_lines"]
+        .as_u64()
+        .map(|v| (v as usize).min(CONTEXT_LINES_CAP))
+        .unwrap_or(0);
     let include = match input["include"].as_str() {
         Some(pattern) => match build_matcher(pattern) {
             Ok(m) => Some((m, !pattern.contains('/'))),
@@ -283,7 +308,11 @@ pub fn grep_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         None => None,
     };
 
-    let needle = if case_insensitive { pattern.to_lowercase() } else { pattern.to_string() };
+    let needle = if case_insensitive {
+        pattern.to_lowercase()
+    } else {
+        pattern.to_string()
+    };
     let mut line_hits = 0usize;
     let mut file_hits: Vec<String> = Vec::new();
     let mut rows: Vec<String> = Vec::new();
@@ -298,7 +327,11 @@ pub fn grep_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         if !entry.file_type().is_file() {
             continue;
         }
-        if entry.metadata().map(|m| m.len() > GREP_FILE_BYTE_CAP).unwrap_or(true) {
+        if entry
+            .metadata()
+            .map(|m| m.len() > GREP_FILE_BYTE_CAP)
+            .unwrap_or(true)
+        {
             continue;
         }
         let rel = entry.path().strip_prefix(&root).unwrap_or(entry.path());
@@ -312,14 +345,20 @@ pub fn grep_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
                 continue;
             }
         }
-        let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
         let lines: Vec<&str> = text.lines().collect();
         let mut file_matched = false;
         // Computed on the first hit in a supported source file; annotates
         // each match with the declaration it sits in.
         let mut file_outline: Option<Vec<super::outline::Item>> = None;
         for (i, line) in lines.iter().enumerate() {
-            let hay = if case_insensitive { line.to_lowercase() } else { line.to_string() };
+            let hay = if case_insensitive {
+                line.to_lowercase()
+            } else {
+                line.to_string()
+            };
             if hay.contains(&needle) {
                 line_hits += 1;
                 if !file_matched {
@@ -336,7 +375,12 @@ pub fn grep_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
                             for (j, ctx_line) in lines[lo..=hi].iter().enumerate() {
                                 let n = lo + j;
                                 let sep = if n == i { ':' } else { '-' };
-                                rows.push(format!("{}{sep}{}{sep}{}", rel.display(), n + 1, ctx_line));
+                                rows.push(format!(
+                                    "{}{sep}{}{sep}{}",
+                                    rel.display(),
+                                    n + 1,
+                                    ctx_line
+                                ));
                             }
                             rows.push("--".into());
                         } else {
@@ -379,7 +423,11 @@ pub fn grep_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
             file_hits.len()
         )),
         "files_with_matches" => {
-            let page: Vec<String> = file_hits.into_iter().skip(offset).take(head_limit).collect();
+            let page: Vec<String> = file_hits
+                .into_iter()
+                .skip(offset)
+                .take(head_limit)
+                .collect();
             if page.is_empty() {
                 ToolOutcome::ok("no matches".to_string())
             } else {
@@ -510,7 +558,9 @@ pub fn file_info(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         .modified()
         .ok()
         .map(|t| {
-            chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M:%S").to_string()
+            chrono::DateTime::<chrono::Local>::from(t)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
         })
         .unwrap_or_else(|| "unknown".into());
     ToolOutcome::ok(format!(
@@ -528,7 +578,10 @@ pub fn semantic_search(ctx: &ToolContext, input: &Value) -> ToolOutcome {
     };
     let keywords: Vec<String> = query
         .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
         .filter(|w| w.len() >= 3)
         .collect();
     if keywords.is_empty() {
@@ -544,10 +597,16 @@ pub fn semantic_search(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         if !entry.file_type().is_file() {
             continue;
         }
-        if entry.metadata().map(|m| m.len() > GREP_FILE_BYTE_CAP).unwrap_or(true) {
+        if entry
+            .metadata()
+            .map(|m| m.len() > GREP_FILE_BYTE_CAP)
+            .unwrap_or(true)
+        {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
         let hay = text.to_lowercase();
         let mut distinct = 0usize;
         let mut total = 0usize;
@@ -574,7 +633,11 @@ pub fn semantic_search(ctx: &ToolContext, input: &Value) -> ToolOutcome {
     }
     let mut out = String::new();
     for (distinct, total, rel) in scored.into_iter().take(20) {
-        let _ = writeln!(out, "{rel} ({distinct}/{} keywords, {total} hits)", keywords.len());
+        let _ = writeln!(
+            out,
+            "{rel} ({distinct}/{} keywords, {total} hits)",
+            keywords.len()
+        );
     }
     ToolOutcome::ok(out)
 }
@@ -621,7 +684,10 @@ mod tests {
             &json!({"path": "a.txt", "old_string": "x = 1\nx = 1", "new_string": "x = 2"}),
         );
         assert!(!out.is_error);
-        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "x = 2\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "x = 2\n"
+        );
     }
 
     #[test]
@@ -647,10 +713,26 @@ mod tests {
         std::fs::write(dir.join("big.rs"), &src).unwrap();
         let out = read_file(&ctx(&dir), &json!({"path": "big.rs"}));
         assert!(!out.is_error);
-        assert!(out.text.contains("continue with start_line=2001"), "{}", out.text);
-        assert!(out.text.contains("declarations in the unread part"), "{}", out.text);
-        assert!(out.text.contains("pub fn late_function(x: u32) -> u32"), "{}", out.text);
-        assert!(out.text.contains("2051"), "map carries the jump line: {}", out.text);
+        assert!(
+            out.text.contains("continue with start_line=2001"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("declarations in the unread part"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("pub fn late_function(x: u32) -> u32"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("2051"),
+            "map carries the jump line: {}",
+            out.text
+        );
     }
 
     #[test]
@@ -674,7 +756,11 @@ mod tests {
         std::fs::write(dir.join("src/lib.rs"), "").unwrap();
         std::fs::write(dir.join("top.md"), "").unwrap();
         let out = glob_files(&ctx(&dir), &json!({"pattern": "*.rs"}));
-        assert!(out.text.contains("src/lib.rs"), "bare pattern matches at depth: {}", out.text);
+        assert!(
+            out.text.contains("src/lib.rs"),
+            "bare pattern matches at depth: {}",
+            out.text
+        );
         let out = glob_files(&ctx(&dir), &json!({"pattern": "src/**/*.rs"}));
         assert!(out.text.contains("src/lib.rs"));
         let count = glob_files(&ctx(&dir), &json!({"pattern": "*.md", "mode": "count"}));

@@ -56,7 +56,9 @@ fn dir() -> PathBuf {
 
 /// Drop journals from sessions old enough that nobody is going to inspect them.
 fn prune(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let now = SystemTime::now();
     for entry in entries.flatten() {
         let stale = entry
@@ -72,7 +74,10 @@ fn prune(dir: &Path) {
 
 /// A session id is minted by us, but it names a file — keep it to a safe shape.
 fn safe_id(session_id: &str) -> String {
-    session_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect()
+    session_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
 }
 
 pub fn path_for(session_id: &str) -> PathBuf {
@@ -82,8 +87,12 @@ pub fn path_for(session_id: &str) -> PathBuf {
 /// Every call in a session, oldest first. Reads from disk, so it works on a
 /// resumed session too.
 pub fn load(session_id: &str) -> Vec<Record> {
-    let Ok(text) = std::fs::read_to_string(path_for(session_id)) else { return Vec::new() };
-    text.lines().filter_map(|line| serde_json::from_str::<Record>(line).ok()).collect()
+    let Ok(text) = std::fs::read_to_string(path_for(session_id)) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Record>(line).ok())
+        .collect()
 }
 
 impl Journal {
@@ -140,8 +149,10 @@ impl Journal {
         };
         if let Ok(line) = serde_json::to_string(&record) {
             use std::io::Write as _;
-            if let Ok(mut file) =
-                std::fs::OpenOptions::new().create(true).append(true).open(&self.path)
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
             {
                 let _ = writeln!(file, "{line}");
             }
@@ -155,7 +166,8 @@ impl Journal {
 /// Wrap in single quotes for /bin/sh, escaping any single quotes inside.
 pub fn quote(s: &str) -> String {
     if !s.is_empty()
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || "._-/=:@+,".contains(c))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-/=:@+,".contains(c))
     {
         return s.to_string();
     }
@@ -186,7 +198,11 @@ fn terminal_repro(input: &Value) -> Repro {
             exact: false,
             lines: vec![format!(
                 "# terminal {action}{} — drives a live session, not a new command",
-                if session.is_empty() { String::new() } else { format!(" on {session}") }
+                if session.is_empty() {
+                    String::new()
+                } else {
+                    format!(" on {session}")
+                }
             )],
         };
     }
@@ -202,24 +218,37 @@ fn terminal_repro(input: &Value) -> Repro {
     } else {
         let _ = write!(line, "{shell} -lc {}", quote(&command));
     }
-    Repro { exact: true, lines: vec![line] }
+    Repro {
+        exact: true,
+        lines: vec![line],
+    }
 }
 
 /// The shell equivalent of a call, for the "run it yourself" block.
 pub fn repro(record: &Record) -> Repro {
     let input = &record.input;
     let path = || quote(&arg(input, "path"));
-    let approx = |line: String| Repro { exact: false, lines: vec![line] };
+    let approx = |line: String| Repro {
+        exact: false,
+        lines: vec![line],
+    };
     match record.tool.as_str() {
         "terminal" => terminal_repro(input),
         "read_file" => {
             let start = input["start_line"].as_u64().unwrap_or(1).max(1);
             let count = input["line_count"].as_u64().unwrap_or(2000);
-            approx(format!("sed -n '{start},{}p' {}", start + count - 1, path()))
+            approx(format!(
+                "sed -n '{start},{}p' {}",
+                start + count - 1,
+                path()
+            ))
         }
         "list_files" => {
             let p = arg(input, "path");
-            approx(format!("ls -la {}", quote(if p.is_empty() { "." } else { &p })))
+            approx(format!(
+                "ls -la {}",
+                quote(if p.is_empty() { "." } else { &p })
+            ))
         }
         "file_info" => approx(format!("stat {}", path())),
         "grep_files" => {
@@ -243,27 +272,51 @@ pub fn repro(record: &Record) -> Repro {
         "glob_files" => {
             let pattern = arg(input, "pattern");
             let root = arg(input, "path");
-            let root = if root.is_empty() { ".".to_string() } else { root };
+            let root = if root.is_empty() {
+                ".".to_string()
+            } else {
+                root
+            };
             // A pattern without a slash matches by filename at any depth;
             // one with a slash matches the whole relative path.
-            let test = if pattern.contains('/') { "-path" } else { "-name" };
-            let needle =
-                if pattern.contains('/') { format!("*/{pattern}") } else { pattern.clone() };
-            approx(format!("find {} -type f {test} {}", quote(&root), quote(&needle)))
+            let test = if pattern.contains('/') {
+                "-path"
+            } else {
+                "-name"
+            };
+            let needle = if pattern.contains('/') {
+                format!("*/{pattern}")
+            } else {
+                pattern.clone()
+            };
+            approx(format!(
+                "find {} -type f {test} {}",
+                quote(&root),
+                quote(&needle)
+            ))
         }
         "write_file" => {
             let content = arg(input, "content");
             let p = path();
             if content.len() > HEREDOC_CAP {
-                approx(format!("# wrote {} bytes to {p} — body under Arguments", content.len()))
+                approx(format!(
+                    "# wrote {} bytes to {p} — body under Arguments",
+                    content.len()
+                ))
             } else {
                 let mut lines = vec![format!("cat > {p} <<'ODEI'")];
                 lines.extend(content.lines().map(str::to_string));
                 lines.push("ODEI".into());
-                Repro { exact: false, lines }
+                Repro {
+                    exact: false,
+                    lines,
+                }
             }
         }
-        "edit_file" => approx(format!("git diff -- {}  # the change is in the Diff section", path())),
+        "edit_file" => approx(format!(
+            "git diff -- {}  # the change is in the Diff section",
+            path()
+        )),
         "delete_file" => approx(format!("rm {}", path())),
         "create_folder" => approx(format!("mkdir -p {}", path())),
         "rename_file" => approx(format!(
@@ -284,7 +337,9 @@ pub fn repro(record: &Record) -> Repro {
                 arg(input, "query").replace(' ', "+")
             ))
         )),
-        other => approx(format!("# {other} runs natively in odei — no shell equivalent")),
+        other => approx(format!(
+            "# {other} runs natively in odei — no shell equivalent"
+        )),
     }
 }
 
@@ -312,10 +367,17 @@ pub fn report(record: &Record, width: usize) -> String {
     );
 
     let repro = repro(record);
-    let title = if repro.exact { "Ran this" } else { "Shell equivalent (approximate)" };
+    let title = if repro.exact {
+        "Ran this"
+    } else {
+        "Shell equivalent (approximate)"
+    };
     let _ = writeln!(out, "{}", rule(title, width));
     if !repro.exact {
-        let _ = writeln!(out, "# odei did this natively; the line below stands in for it");
+        let _ = writeln!(
+            out,
+            "# odei did this natively; the line below stands in for it"
+        );
     }
     let _ = writeln!(out, "cd {}", quote(&record.cwd));
     for line in &repro.lines {
@@ -369,7 +431,11 @@ pub fn report(record: &Record, width: usize) -> String {
 pub fn summary_line(record: &Record) -> String {
     let mark = if record.is_error { '✗' } else { ' ' };
     let seconds = record.ms as f64 / 1000.0;
-    let timing = if seconds >= 0.05 { format!("{seconds:.1}s") } else { String::new() };
+    let timing = if seconds >= 0.05 {
+        format!("{seconds:.1}s")
+    } else {
+        String::new()
+    };
     let mut label = record.label.clone();
     if let Some(diff) = record.diff.as_ref().filter(|d| !d.is_empty()) {
         let _ = write!(label, "  {}", diff.stat());
@@ -377,7 +443,10 @@ pub fn summary_line(record: &Record) -> String {
     if label.chars().count() > 52 {
         label = label.chars().take(51).collect::<String>() + "…";
     }
-    format!("#{:<4}{mark} {:<16} {label:<53} {timing:>6}", record.n, record.tool)
+    format!(
+        "#{:<4}{mark} {:<16} {label:<53} {timing:>6}",
+        record.n, record.tool
+    )
 }
 
 #[cfg(test)]
@@ -410,7 +479,10 @@ mod tests {
 
     #[test]
     fn terminal_repro_is_marked_exact_and_carries_the_env() {
-        let r = repro(&record("terminal", json!({"action": "exec", "command": "cargo test"})));
+        let r = repro(&record(
+            "terminal",
+            json!({"action": "exec", "command": "cargo test"}),
+        ));
         assert!(r.exact);
         let line = r.lines.join("\n");
         assert!(line.contains("PAGER=cat"), "{line}");
@@ -425,14 +497,20 @@ mod tests {
         assert!(r.lines[0].contains("/bin/sh -c ls"), "{:?}", r.lines);
 
         // Session actions spawn nothing, so they claim nothing.
-        let r = repro(&record("terminal", json!({"action": "read", "session_id": "s1"})));
+        let r = repro(&record(
+            "terminal",
+            json!({"action": "read", "session_id": "s1"}),
+        ));
         assert!(!r.exact);
         assert!(r.lines[0].starts_with('#'), "{:?}", r.lines);
     }
 
     #[test]
     fn native_tools_get_approximate_shell_equivalents() {
-        let r = repro(&record("read_file", json!({"path": "src/a.rs", "start_line": 10, "line_count": 5})));
+        let r = repro(&record(
+            "read_file",
+            json!({"path": "src/a.rs", "start_line": 10, "line_count": 5}),
+        ));
         assert!(!r.exact);
         assert_eq!(r.lines[0], "sed -n '10,14p' src/a.rs");
 
@@ -451,17 +529,26 @@ mod tests {
 
     #[test]
     fn write_file_repro_is_a_heredoc_until_it_is_too_big() {
-        let r = repro(&record("write_file", json!({"path": "a.txt", "content": "one\ntwo\n"})));
+        let r = repro(&record(
+            "write_file",
+            json!({"path": "a.txt", "content": "one\ntwo\n"}),
+        ));
         assert_eq!(r.lines, vec!["cat > a.txt <<'ODEI'", "one", "two", "ODEI"]);
 
         let big = "x".repeat(HEREDOC_CAP + 1);
-        let r = repro(&record("write_file", json!({"path": "a.txt", "content": big})));
+        let r = repro(&record(
+            "write_file",
+            json!({"path": "a.txt", "content": big}),
+        ));
         assert!(r.lines[0].contains("bytes to a.txt"), "{:?}", r.lines);
     }
 
     #[test]
     fn report_lays_out_header_repro_arguments_and_output() {
-        let mut rec = record("terminal", json!({"action": "exec", "command": "cargo test"}));
+        let mut rec = record(
+            "terminal",
+            json!({"action": "exec", "command": "cargo test"}),
+        );
         rec.is_error = true;
         rec.output = "test result: FAILED".into();
         let text = report(&rec, 72);
@@ -496,7 +583,10 @@ mod tests {
         assert!(text.contains(" 2 - two"), "{text}");
         assert!(text.contains(" 2 + TWO"), "{text}");
         // The diff comes before the arguments that produced it.
-        assert!(text.find("── Diff").unwrap() < text.find("── Arguments").unwrap(), "{text}");
+        assert!(
+            text.find("── Diff").unwrap() < text.find("── Arguments").unwrap(),
+            "{text}"
+        );
         assert!(!text.contains('\x1b'), "report must stay plain text");
 
         // A rewrite too large to keep says so instead of showing nothing.

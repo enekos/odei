@@ -19,7 +19,10 @@ fn get(url: &str) -> Result<(String, String), String> {
     let response = agent
         .get(url)
         .set("user-agent", "odei/0.1")
-        .set("accept", "text/html,application/xhtml+xml,text/plain,application/json,*/*")
+        .set(
+            "accept",
+            "text/html,application/xhtml+xml,text/plain,application/json,*/*",
+        )
         .call()
         .map_err(|e| match e {
             ureq::Error::Status(code, _) => format!("HTTP {code}"),
@@ -111,10 +114,17 @@ pub fn web_fetch(_ctx: &ToolContext, input: &Value) -> ToolOutcome {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return ToolOutcome::err("url must be http(s)");
     }
-    let cap = input["max_bytes"].as_u64().map(|v| (v as usize).min(FETCH_TEXT_CAP)).unwrap_or(FETCH_TEXT_CAP);
+    let cap = input["max_bytes"]
+        .as_u64()
+        .map(|v| (v as usize).min(FETCH_TEXT_CAP))
+        .unwrap_or(FETCH_TEXT_CAP);
     match get(url) {
         Ok((content_type, body)) => {
-            let mut text = if content_type.contains("html") { html_to_text(&body) } else { body };
+            let mut text = if content_type.contains("html") {
+                html_to_text(&body)
+            } else {
+                body
+            };
             if text.len() > cap {
                 text.truncate(cap);
                 text.push_str("\n[truncated]");
@@ -133,11 +143,19 @@ pub fn web_search(_ctx: &ToolContext, input: &Value) -> ToolOutcome {
     };
     let allowed: Vec<String> = input["allowed_domains"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     let blocked: Vec<String> = input["blocked_domains"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
 
     let encoded: String = query
@@ -159,9 +177,10 @@ pub fn web_search(_ctx: &ToolContext, input: &Value) -> ToolOutcome {
     };
 
     // Result anchors look like: <a class="result__a" href="...">Title</a>
-    let link_re =
-        regex::Regex::new(r#"(?is)<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#)
-            .unwrap();
+    let link_re = regex::Regex::new(
+        r#"(?is)<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#,
+    )
+    .unwrap();
     let mut out = String::new();
     let mut count = 0usize;
     for capture in link_re.captures_iter(&body) {

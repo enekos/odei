@@ -67,7 +67,11 @@ fn contents(messages: &[Message]) -> Vec<Value> {
     }
     let mut out = Vec::new();
     for message in messages {
-        let role = if message.role == "assistant" { "model" } else { "user" };
+        let role = if message.role == "assistant" {
+            "model"
+        } else {
+            "user"
+        };
         let mut parts = Vec::new();
         for block in &message.content {
             match block {
@@ -76,11 +80,30 @@ fn contents(messages: &[Message]) -> Vec<Value> {
                         parts.push(json!({ "text": text }));
                     }
                 }
-                ContentBlock::ToolUse { name, input, .. } => {
-                    let args = if input.is_object() { input.clone() } else { json!({}) };
-                    parts.push(json!({ "functionCall": { "name": name, "args": args } }));
+                ContentBlock::ToolUse {
+                    name,
+                    input,
+                    signature,
+                    ..
+                } => {
+                    let args = if input.is_object() {
+                        input.clone()
+                    } else {
+                        json!({})
+                    };
+                    let mut part = json!({ "functionCall": { "name": name, "args": args } });
+                    // Gemini 3 requires the thought signature echoed on the
+                    // part, or the continuation is rejected with HTTP 400.
+                    if let Some(signature) = signature {
+                        part["thoughtSignature"] = json!(signature);
+                    }
+                    parts.push(part);
                 }
-                ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => {
                     let name = names.get(tool_use_id.as_str()).copied().unwrap_or("tool");
                     let response = if *is_error {
                         json!({ "error": content })
@@ -204,6 +227,7 @@ fn apply_chunk(
                     id,
                     name,
                     input: if args.is_null() { json!({}) } else { args },
+                    signature: part["thoughtSignature"].as_str().map(str::to_string),
                 });
             }
         }
@@ -257,7 +281,13 @@ fn read_stream(
         }
     }
 
-    let StreamState { text, thinking, calls, finish, usage } = state;
+    let StreamState {
+        text,
+        thinking,
+        calls,
+        finish,
+        usage,
+    } = state;
     let mut content = Vec::new();
     if !text.is_empty() {
         content.push(ContentBlock::Text { text });
@@ -269,7 +299,12 @@ fn read_stream(
         "" | "STOP" => if has_calls { "tool_use" } else { "end_turn" }.to_string(),
         other => other.to_ascii_lowercase(),
     };
-    Ok(TurnResult { content, thinking, stop_reason, usage })
+    Ok(TurnResult {
+        content,
+        thinking,
+        stop_reason,
+        usage,
+    })
 }
 
 pub fn check_connectivity(config: &Config) -> Result<(), ProviderError> {
@@ -283,7 +318,10 @@ pub fn check_connectivity(config: &Config) -> Result<(), ProviderError> {
         Ok(_) => Ok(()),
         Err(ureq::Error::Status(status, r)) => {
             let text = r.into_string().unwrap_or_default();
-            Err(ProviderError::Http(status, text.chars().take(300).collect()))
+            Err(ProviderError::Http(
+                status,
+                text.chars().take(300).collect(),
+            ))
         }
         Err(ureq::Error::Transport(t)) => Err(ProviderError::Transport(t.to_string())),
     }
@@ -317,11 +355,14 @@ mod tests {
             Message {
                 role: "assistant".into(),
                 content: vec![
-                    ContentBlock::Text { text: "Reading it.".into() },
+                    ContentBlock::Text {
+                        text: "Reading it.".into(),
+                    },
                     ContentBlock::ToolUse {
                         id: "read_file-0".into(),
                         name: "read_file".into(),
                         input: json!({"path": "config.rs"}),
+                        signature: Some("sig-abc".into()),
                     },
                 ],
             },
@@ -340,10 +381,18 @@ mod tests {
         assert_eq!(contents[1]["role"], "model");
         assert_eq!(contents[1]["parts"][0]["text"], "Reading it.");
         assert_eq!(contents[1]["parts"][1]["functionCall"]["name"], "read_file");
-        assert_eq!(contents[1]["parts"][1]["functionCall"]["args"]["path"], "config.rs");
+        assert_eq!(
+            contents[1]["parts"][1]["functionCall"]["args"]["path"],
+            "config.rs"
+        );
+        // The captured thought signature rides the same part on replay.
+        assert_eq!(contents[1]["parts"][1]["thoughtSignature"], "sig-abc");
         // The response is matched back to its call by name, resolved via the id.
         assert_eq!(contents[2]["role"], "user");
-        assert_eq!(contents[2]["parts"][0]["functionResponse"]["name"], "read_file");
+        assert_eq!(
+            contents[2]["parts"][0]["functionResponse"]["name"],
+            "read_file"
+        );
         assert_eq!(
             contents[2]["parts"][0]["functionResponse"]["response"]["result"],
             "pub struct Config;"
@@ -359,6 +408,7 @@ mod tests {
                     id: "terminal-3".into(),
                     name: "terminal".into(),
                     input: json!({"command": "false"}),
+                    signature: None,
                 }],
             },
             Message {
@@ -371,7 +421,32 @@ mod tests {
             },
         ];
         let contents = contents(&messages);
-        assert_eq!(contents[1]["parts"][0]["functionResponse"]["response"]["error"], "exit 1");
+        assert_eq!(
+            contents[1]["parts"][0]["functionResponse"]["response"]["error"],
+            "exit 1"
+        );
+        // A signature-less call (Kimi-minted, or a pre-signature session)
+        // replays without the field rather than inventing one.
+        assert!(contents[0]["parts"][0].get("thoughtSignature").is_none());
+    }
+
+    #[test]
+    fn a_function_call_keeps_its_thought_signature() {
+        let events = [json!({"candidates": [{"content": {"parts": [
+            {"functionCall": {"name": "read_file", "args": {"path": "a.py"}},
+             "thoughtSignature": "sig-1"},
+            {"functionCall": {"name": "read_file", "args": {"path": "b.py"}}}
+        ], "role": "model"}, "finishReason": "STOP"}]})];
+        let turn = read(&sse(&events));
+        let signatures: Vec<Option<&str>> = turn
+            .content
+            .iter()
+            .map(|block| match block {
+                ContentBlock::ToolUse { signature, .. } => signature.as_deref(),
+                other => panic!("expected a tool call, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(signatures, [Some("sig-1"), None]);
     }
 
     #[test]
@@ -429,20 +504,20 @@ mod tests {
 
     #[test]
     fn a_function_call_becomes_a_tool_use_with_a_unique_id() {
-        let events = [
-            json!({"candidates": [{"content": {"parts": [
+        let events = [json!({"candidates": [{"content": {"parts": [
                 {"functionCall": {"name": "read_file", "args": {"path": "app.py"}}},
                 {"functionCall": {"name": "read_file", "args": {"path": "lib.py"}}}
             ], "role": "model"}, "finishReason": "STOP"}],
-                "usageMetadata": {"promptTokenCount": 30, "candidatesTokenCount": 9}}),
-        ];
+                "usageMetadata": {"promptTokenCount": 30, "candidatesTokenCount": 9}})];
         let turn = read(&sse(&events));
         assert_eq!(turn.stop_reason, "tool_use");
         let ids: Vec<&str> = turn
             .content
             .iter()
             .map(|block| match block {
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     assert_eq!(name, "read_file");
                     assert!(input["path"].is_string());
                     id.as_str()
@@ -455,14 +530,12 @@ mod tests {
 
     #[test]
     fn thought_parts_stay_out_of_the_content() {
-        let events = [
-            json!({"candidates": [{"content": {"parts": [
+        let events = [json!({"candidates": [{"content": {"parts": [
                 {"text": "the file is small", "thought": true},
                 {"text": "It greets."}
             ], "role": "model"}, "finishReason": "STOP"}],
                 "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 4,
-                    "thoughtsTokenCount": 7}}),
-        ];
+                    "thoughtsTokenCount": 7}})];
         let turn = read(&sse(&events));
         assert_eq!(turn.content.len(), 1);
         assert!(matches!(&turn.content[0], ContentBlock::Text { text } if text == "It greets."));

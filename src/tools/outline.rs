@@ -232,7 +232,13 @@ fn scan_brace(lang: Lang, text: &str) -> Vec<Row> {
                         i += 1;
                     }
                 }
-                Mode::Str { quote, template, expr, raw_hashes, emitted } => {
+                Mode::Str {
+                    quote,
+                    template,
+                    expr,
+                    raw_hashes,
+                    emitted,
+                } => {
                     let c = chars[i];
                     if *raw_hashes > 0 {
                         if c == '"' {
@@ -287,12 +293,18 @@ fn scan_brace(lang: Lang, text: &str) -> Vec<Row> {
         // Ordinary quotes don't survive the newline; an unbalanced one (a
         // regex, invalid code) must not poison the rest of the file. Rust raw
         // strings, Go raw strings and JS templates legitimately span lines.
-        if let Mode::Str { quote, raw_hashes, .. } = mode {
+        if let Mode::Str {
+            quote, raw_hashes, ..
+        } = mode
+        {
             if quote != '`' && raw_hashes == 0 {
                 mode = Mode::Code;
             }
         }
-        rows.push(Row { depth: start_depth, text: out });
+        rows.push(Row {
+            depth: start_depth,
+            text: out,
+        });
     }
     rows
 }
@@ -318,9 +330,15 @@ fn strip_mods<'a>(mut s: &'a str, mods: &[&str]) -> &'a str {
         for m in mods {
             if let Some(rest) = word(s, m) {
                 let rest = if let Some(inner) = rest.strip_prefix('(') {
-                    inner.split_once(')').map(|x| x.1.trim_start()).unwrap_or(rest)
+                    inner
+                        .split_once(')')
+                        .map(|x| x.1.trim_start())
+                        .unwrap_or(rest)
                 } else if let Some(inner) = rest.strip_prefix('"') {
-                    inner.split_once('"').map(|x| x.1.trim_start()).unwrap_or(rest)
+                    inner
+                        .split_once('"')
+                        .map(|x| x.1.trim_start())
+                        .unwrap_or(rest)
                 } else {
                     rest
                 };
@@ -395,8 +413,11 @@ fn match_rust(s: &str) -> Option<Kind> {
 /// the `const fn` modifier there.
 fn match_rust_const(s: &str) -> bool {
     let s = strip_mods(s, &["pub"]);
-    word(s, "const")
-        .is_some_and(|rest| rest.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_'))
+    word(s, "const").is_some_and(|rest| {
+        rest.chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_')
+    })
 }
 
 fn match_jsts(s: &str, parent: Option<Kind>) -> Option<Kind> {
@@ -448,8 +469,17 @@ fn match_jsts(s: &str, parent: Option<Kind>) -> Option<Kind> {
         let m = strip_mods(
             s,
             &[
-                "public", "private", "protected", "static", "readonly", "async", "get", "set",
-                "override", "abstract", "accessor",
+                "public",
+                "private",
+                "protected",
+                "static",
+                "readonly",
+                "async",
+                "get",
+                "set",
+                "override",
+                "abstract",
+                "accessor",
             ],
         )
         .trim_start_matches('*')
@@ -493,9 +523,24 @@ fn match_cfamily(s: &str) -> Option<(Kind, bool)> {
     let t = strip_mods(
         s,
         &[
-            "public", "private", "protected", "static", "final", "abstract", "virtual", "inline",
-            "constexpr", "extern", "export", "friend", "internal", "sealed", "partial",
-            "override", "open", "data",
+            "public",
+            "private",
+            "protected",
+            "static",
+            "final",
+            "abstract",
+            "virtual",
+            "inline",
+            "constexpr",
+            "extern",
+            "export",
+            "friend",
+            "internal",
+            "sealed",
+            "partial",
+            "override",
+            "open",
+            "data",
         ],
     );
     if word(t, "namespace").is_some() {
@@ -526,7 +571,10 @@ fn match_cfamily(s: &str) -> Option<(Kind, bool)> {
             return None;
         }
     }
-    let starts_ident = t.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_' || c == '~');
+    let starts_ident = t
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '~');
     if starts_ident && t.contains('(') && !t.split('(').next().unwrap_or("").contains('=') {
         return Some((Kind::Leaf, true));
     }
@@ -591,16 +639,11 @@ fn parse_brace(lang: Lang, rows: &[Row]) -> Vec<Item> {
         let parent = match depth {
             0 => None,
             1 => flags[0].filter(|k| *k != Kind::Leaf),
-            2 if flags[0].is_some_and(|k| k != Kind::Leaf) => {
-                flags[1].filter(|k| *k != Kind::Leaf)
-            }
+            2 if flags[0].is_some_and(|k| k != Kind::Leaf) => flags[1].filter(|k| *k != Kind::Leaf),
             _ => None,
         };
         let allowed = depth == 0 || parent.is_some();
-        if trimmed.is_empty()
-            || !allowed
-            || (lang == Lang::Rust && trimmed.starts_with("#["))
-        {
+        if trimmed.is_empty() || !allowed || (lang == Lang::Rust && trimmed.starts_with("#[")) {
             i += 1;
             continue;
         }
@@ -620,7 +663,13 @@ fn parse_brace(lang: Lang, rows: &[Row]) -> Vec<Item> {
         let (sig, consumed, terminator) = join_signature(rows, i);
         if needs_body_check {
             let proto = terminator == Some(';')
-                && sig.split('(').next().unwrap_or("").split_whitespace().count() >= 2;
+                && sig
+                    .split('(')
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .count()
+                    >= 2;
             if terminator != Some('{') && !proto {
                 i += consumed;
                 continue;
@@ -632,7 +681,15 @@ fn parse_brace(lang: Lang, rows: &[Row]) -> Vec<Item> {
                 flags[1] = None;
             }
         }
-        items.push((Item { line: i + 1, end: i + 1, depth, text: sig }, i + consumed - 1));
+        items.push((
+            Item {
+                line: i + 1,
+                end: i + 1,
+                depth,
+                text: sig,
+            },
+            i + consumed - 1,
+        ));
         i += consumed;
     }
     close_items(rows, items)
@@ -714,9 +771,8 @@ fn parse_python(text: &str) -> Vec<Item> {
             if c == '"' || c == '\'' {
                 if chars.get(i + 1) == Some(&c) && chars.get(i + 2) == Some(&c) {
                     // Triple quote: closed on this line, or spills over.
-                    let close_at = (i + 3..chars.len().saturating_sub(2)).find(|&j| {
-                        chars[j] == c && chars[j + 1] == c && chars[j + 2] == c
-                    });
+                    let close_at = (i + 3..chars.len().saturating_sub(2))
+                        .find(|&j| chars[j] == c && chars[j + 1] == c && chars[j + 2] == c);
                     match close_at {
                         Some(j) => {
                             out.push('…');
@@ -799,7 +855,12 @@ fn parse_python(text: &str) -> Vec<Item> {
             }
             let sig = sig.split_whitespace().collect::<Vec<_>>().join(" ");
             let idx = if report {
-                items.push(Item { line: i + 1, end: i + 1, depth, text: sig });
+                items.push(Item {
+                    line: i + 1,
+                    end: i + 1,
+                    depth,
+                    text: sig,
+                });
                 items.len() - 1
             } else {
                 usize::MAX
@@ -813,14 +874,21 @@ fn parse_python(text: &str) -> Vec<Item> {
             if let Some((name, _)) = trimmed.split_once('=') {
                 let name = name.trim().trim_end_matches(':').trim();
                 let is_const = !name.is_empty()
-                    && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
                     && name.chars().next().is_some_and(|c| c.is_ascii_uppercase());
                 if is_const {
                     let mut text: String = trimmed.chars().take(60).collect();
                     if trimmed.chars().count() > 60 {
                         text.push('…');
                     }
-                    items.push(Item { line: i + 1, end: i + 1, depth: 0, text });
+                    items.push(Item {
+                        line: i + 1,
+                        end: i + 1,
+                        depth: 0,
+                        text,
+                    });
                 }
             }
         }
@@ -844,7 +912,10 @@ pub fn outline(lang: Lang, text: &str) -> Vec<Item> {
 
 /// The innermost declaration whose span contains `line`, if any.
 pub fn enclosing(items: &[Item], line: usize) -> Option<&Item> {
-    items.iter().filter(|i| i.line <= line && line <= i.end).max_by_key(|i| i.line)
+    items
+        .iter()
+        .filter(|i| i.line <= line && line <= i.end)
+        .max_by_key(|i| i.line)
 }
 
 /// Compact name for annotations: the signature up to its parameter list.
@@ -865,7 +936,13 @@ pub fn render(items: &[Item], max_items: usize, max_bytes: usize) -> String {
         if shown >= max_items || out.len() >= max_bytes {
             break;
         }
-        let _ = writeln!(out, "{:>6}  {}{}", item.line, "  ".repeat(item.depth), item.text);
+        let _ = writeln!(
+            out,
+            "{:>6}  {}{}",
+            item.line,
+            "  ".repeat(item.depth),
+            item.text
+        );
         shown += 1;
     }
     if shown < items.len() {
@@ -918,7 +995,9 @@ fn outline_dir(root: &Path) -> ToolOutcome {
         .filter(|e| {
             e.file_type().is_file()
                 && Lang::of(e.path()).is_some()
-                && e.metadata().map(|m| m.len() <= OUTLINE_SOURCE_CAP).unwrap_or(false)
+                && e.metadata()
+                    .map(|m| m.len() <= OUTLINE_SOURCE_CAP)
+                    .unwrap_or(false)
         })
         .map(|e| e.path().to_path_buf())
         .collect();
@@ -933,20 +1012,37 @@ fn outline_dir(root: &Path) -> ToolOutcome {
         if shown >= DIR_FILE_CAP || out.len() >= DIR_BYTE_CAP {
             break;
         }
-        let Ok(text) = std::fs::read_to_string(file) else { continue };
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
         let Some(lang) = Lang::of(file) else { continue };
         let items = outline(lang, &text);
-        let rel = file.strip_prefix(root).unwrap_or(file).display().to_string();
+        let rel = file
+            .strip_prefix(root)
+            .unwrap_or(file)
+            .display()
+            .to_string();
         shown += 1;
         if items.is_empty() {
-            let _ = writeln!(out, "## {rel} ({} lines) — no declarations", text.lines().count());
+            let _ = writeln!(
+                out,
+                "## {rel} ({} lines) — no declarations",
+                text.lines().count()
+            );
             continue;
         }
         let _ = writeln!(out, "## {rel} ({} lines)", text.lines().count());
-        out.push_str(&render(&items, DIR_ITEM_CAP, DIR_BYTE_CAP.saturating_sub(out.len())));
+        out.push_str(&render(
+            &items,
+            DIR_ITEM_CAP,
+            DIR_BYTE_CAP.saturating_sub(out.len()),
+        ));
     }
     if shown < total {
-        let _ = write!(out, "[{shown} of {total} source files shown; point me at a subdirectory]");
+        let _ = write!(
+            out,
+            "[{shown} of {total} source files shown; point me at a subdirectory]"
+        );
     }
     ToolOutcome::ok(out)
 }
@@ -956,7 +1052,10 @@ mod tests {
     use super::*;
 
     fn texts(items: &[Item]) -> Vec<(usize, usize, &str)> {
-        items.iter().map(|i| (i.line, i.depth, i.text.as_str())).collect()
+        items
+            .iter()
+            .map(|i| (i.line, i.depth, i.text.as_str()))
+            .collect()
     }
 
     #[test]
@@ -1100,7 +1199,11 @@ def also_fake():
             ]
         );
         let runner = items.iter().find(|i| i.text.starts_with("class")).unwrap();
-        assert!(runner.end >= 15, "class span reaches its last method, got {}", runner.end);
+        assert!(
+            runner.end >= 15,
+            "class span reaches its last method, got {}",
+            runner.end
+        );
     }
 
     #[test]

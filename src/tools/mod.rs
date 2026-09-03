@@ -21,10 +21,18 @@ pub struct ToolOutcome {
 
 impl ToolOutcome {
     pub fn ok(text: impl Into<String>) -> Self {
-        ToolOutcome { text: text.into(), is_error: false, diff: None }
+        ToolOutcome {
+            text: text.into(),
+            is_error: false,
+            diff: None,
+        }
     }
     pub fn err(text: impl Into<String>) -> Self {
-        ToolOutcome { text: text.into(), is_error: true, diff: None }
+        ToolOutcome {
+            text: text.into(),
+            is_error: true,
+            diff: None,
+        }
     }
     pub fn with_diff(mut self, diff: crate::diff::FileDiff) -> Self {
         self.diff = Some(diff);
@@ -92,14 +100,19 @@ impl ToolContext {
     }
 
     pub fn is_external(&self, resolved: &Path) -> bool {
-        let canonical_root =
-            self.workspace_root.canonicalize().unwrap_or_else(|_| self.workspace_root.clone());
+        let canonical_root = self
+            .workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.workspace_root.clone());
         let canonical = resolved
             .canonicalize()
             .or_else(|_| {
                 resolved
                     .parent()
-                    .map(|p| p.canonicalize().map(|c| c.join(resolved.file_name().unwrap_or_default())))
+                    .map(|p| {
+                        p.canonicalize()
+                            .map(|c| c.join(resolved.file_name().unwrap_or_default()))
+                    })
                     .unwrap_or_else(|| Ok(resolved.to_path_buf()))
             })
             .unwrap_or_else(|_| resolved.to_path_buf());
@@ -132,7 +145,11 @@ pub fn gateway_tools() -> Vec<Value> {
 
 /// Activity line label, e.g. "Read src/main.rs" / "Ran cargo build".
 pub fn activity_label(spec: &ToolSpec, input: &Value, completed: bool) -> String {
-    let verb = if completed { spec.completed_action_label } else { spec.action_label };
+    let verb = if completed {
+        spec.completed_action_label
+    } else {
+        spec.action_label
+    };
     let arg = input[spec.label_arg].as_str().unwrap_or(spec.label_default);
     let mut arg = arg.trim().to_string();
     if arg.is_empty() {
@@ -161,7 +178,10 @@ pub fn group_summary(kinds: &[ActivityKind]) -> String {
             ActivityKind::Web => webs += 1,
         }
     }
-    let mut parts = vec![format!("{total} tool call{}", if total == 1 { "" } else { "s" })];
+    let mut parts = vec![format!(
+        "{total} tool call{}",
+        if total == 1 { "" } else { "s" }
+    )];
     if reads > 0 {
         parts.push(format!("{reads} read{}", if reads == 1 { "" } else { "s" }));
     }
@@ -169,10 +189,16 @@ pub fn group_summary(kinds: &[ActivityKind]) -> String {
         parts.push(format!("{edits} edit{}", if edits == 1 { "" } else { "s" }));
     }
     if writes > 0 {
-        parts.push(format!("{writes} write{}", if writes == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{writes} write{}",
+            if writes == 1 { "" } else { "s" }
+        ));
     }
     if commands > 0 {
-        parts.push(format!("{commands} command{}", if commands == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{commands} command{}",
+            if commands == 1 { "" } else { "s" }
+        ));
     }
     if webs > 0 {
         parts.push(format!("{webs} web"));

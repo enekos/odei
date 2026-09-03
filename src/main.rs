@@ -4,8 +4,8 @@
 
 mod activity;
 mod agent;
-mod calls;
 mod blinker;
+mod calls;
 mod cli;
 mod commands;
 mod compact;
@@ -71,7 +71,10 @@ fn main() {
         },
         Some("serve") => {
             let flag = |name: &str| {
-                args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+                args.iter()
+                    .position(|a| a == name)
+                    .and_then(|i| args.get(i + 1))
+                    .cloned()
             };
             serve::serve(config, flag("--workspace"), flag("--resume"))
         }
