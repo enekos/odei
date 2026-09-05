@@ -218,8 +218,11 @@ Running git push origin main
  y  allow   a  always allow   n  deny
 ```
 
-`a` saves a rule so the same shape of action runs unattended next time. Inspect rules with
-`/allowlist`, clear them with `/permissions reset`. Other modes: `/permissions ask` (approve
+`a` saves a rule so the same shape of action runs unattended next time. For a routine command
+the shape is the program and its subcommand (`git status`, `cargo test`, `pnpm install`); for a
+sensitive one it is the exact command, so approving `git push origin main` never covers
+`git push --force`, and a rule saved from `git status` never widens to any push. Inspect rules
+with `/allowlist`, clear them with `/permissions reset`. Other modes: `/permissions ask` (approve
 everything sensitive) and `/permissions yolo` (approve nothing).
 
 ## Models
