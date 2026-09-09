@@ -843,6 +843,7 @@ mod tests {
             workspace_root: std::env::temp_dir(),
             prompt_cache: true,
             system_prompt_file: None,
+            stream_stall: std::time::Duration::from_secs(120),
         }
     }
 

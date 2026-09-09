@@ -66,6 +66,10 @@ pub trait Sink {
     /// The model's own reasoning, when the provider streams it separately
     /// from the answer. Only surfaced by sinks that ask for detail.
     fn on_thinking(&mut self, _text: &str) {}
+    /// Nothing has arrived from the model for this many seconds. Interactive
+    /// sinks use it to keep the waiting line honest; it fires on top of the
+    /// stall budget that eventually aborts and retries the request.
+    fn on_silence(&mut self, _seconds: u64) {}
     fn on_step_done(&mut self, _step: &StepDone) {}
     fn on_group_start(&mut self, summary: &str);
     fn on_tool_start(&mut self, start: &ToolStart);
@@ -107,6 +111,8 @@ impl Agent {
         let tool_context = ToolContext::new(&config.workspace_root);
         let rules = permissions::load_rules();
         let journal = calls::Journal::new(&session.meta.id);
+        crate::debug::set_context(&session.meta.id);
+        crate::debug::announce();
         Agent {
             config,
             tool_context,
@@ -235,6 +241,11 @@ impl Agent {
             sink.on_waiting(step + 1);
             let mut saw_text = false;
             let started = std::time::Instant::now();
+            crate::debug_log!(
+                "step {}: requesting ({} messages)",
+                step + 1,
+                self.session.messages.len()
+            );
             let result = provider::stream_turn(
                 &self.config,
                 &system,
@@ -248,13 +259,20 @@ impl Agent {
                     }
                     StreamEvent::ThinkingDelta(piece) => sink.on_thinking(piece),
                     StreamEvent::ToolUseStart { .. } => {}
+                    StreamEvent::Silence { seconds } => sink.on_silence(seconds),
                 },
             );
             let elapsed = started.elapsed();
+            crate::debug_log!(
+                "step {}: stream returned in {}ms",
+                step + 1,
+                elapsed.as_millis()
+            );
 
             let turn = match result {
                 Ok(turn) => turn,
                 Err(provider::ProviderError::Cancelled) => {
+                    crate::debug_log!("turn interrupted");
                     if saw_text {
                         sink.on_text_done();
                     }
@@ -262,6 +280,7 @@ impl Agent {
                     return Ok(());
                 }
                 Err(e) => {
+                    crate::debug_log!("turn failed: {e}");
                     if saw_text {
                         sink.on_text_done();
                     }
@@ -390,6 +409,7 @@ impl Agent {
             return tools::ToolOutcome::err(format!("unknown tool: {name}"));
         };
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            crate::debug_log!("tool {name} skipped: cancelled");
             return tools::ToolOutcome::err("cancelled by user");
         }
 
@@ -402,9 +422,12 @@ impl Agent {
             input,
         );
         if decision == Decision::NeedsApproval {
+            crate::debug_log!("approval requested: {running_label}");
             let detail = serde_json::to_string_pretty(input).unwrap_or_default();
             match sink.request_approval(spec.name, &running_label, &detail) {
-                Approval::Allow => {}
+                Approval::Allow => {
+                    crate::debug_log!("approval granted once: {running_label}");
+                }
                 Approval::AlwaysAllow => {
                     let target = input[spec.label_arg].as_str().unwrap_or("");
                     // Terminal rules remember the first command token.
@@ -416,6 +439,7 @@ impl Agent {
                     permissions::remember_allow(&mut self.rules, spec.name, &target);
                 }
                 Approval::Deny => {
+                    crate::debug_log!("approval denied: {running_label}");
                     let denied = format!("Denied {running_label}");
                     sink.on_tool_done(&ToolDone {
                         tool: spec.name,
@@ -442,8 +466,16 @@ impl Agent {
             last_in_group,
         });
         let started = std::time::Instant::now();
+        crate::debug_log!("tool start: {running_label}");
         let outcome = (spec.call)(&self.tool_context, input);
         let elapsed = started.elapsed();
+        crate::debug_log!(
+            "tool done: {} ({}ms, {} bytes, error={})",
+            running_label,
+            elapsed.as_millis(),
+            outcome.text.len(),
+            outcome.is_error
+        );
         let done_label = tools::activity_label(spec, input, true);
         // Journalled before the result is trimmed for the transcript, so the
         // record keeps everything the tool actually returned.

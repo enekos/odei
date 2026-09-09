@@ -85,8 +85,15 @@ pub struct TurnResult {
 #[allow(dead_code)]
 pub enum StreamEvent<'a> {
     TextDelta(&'a str),
-    ToolUseStart { name: &'a str },
+    ToolUseStart {
+        name: &'a str,
+    },
     ThinkingDelta(&'a str),
+    /// Nothing has arrived for this many seconds. Sinks that show a waiting
+    /// line use it to prove the turn is alive; everyone else ignores it.
+    Silence {
+        seconds: u64,
+    },
 }
 
 #[derive(Debug)]
@@ -96,6 +103,14 @@ pub enum ProviderError {
     Http(u16, String),
     Transport(String),
     Protocol(String),
+    /// The stream died or went silent partway through. `mid_turn` records
+    /// whether the model had already produced visible output — a stream that
+    /// died before saying anything is safe to retry, one that died mid-answer
+    /// is not, because the retry would re-emit what the user already saw.
+    StreamDropped {
+        mid_turn: bool,
+        message: String,
+    },
 }
 
 pub const MISSING_KEY_HINT: &str =
@@ -111,6 +126,7 @@ impl std::fmt::Display for ProviderError {
             }
             ProviderError::Transport(msg) => write!(f, "network failure: {msg}"),
             ProviderError::Protocol(msg) => write!(f, "unexpected model response: {msg}"),
+            ProviderError::StreamDropped { message, .. } => write!(f, "{message}"),
         }
     }
 }
@@ -118,6 +134,11 @@ impl std::fmt::Display for ProviderError {
 fn retryable_status(status: u16) -> bool {
     matches!(status, 408 | 409 | 429 | 500 | 502 | 503 | 504 | 529)
 }
+
+/// Per-read socket timeout on the model stream. Short on purpose: it is the
+/// granularity at which a silent stream gets polled (cancel checks, silence
+/// heartbeats), not a deadline — progress resets it.
+pub(crate) const READ_SLICE: Duration = Duration::from_secs(15);
 
 /// Set when the endpoint rejects `cache_control`, so the rest of the process
 /// stops sending it. Kimi speaks the Anthropic protocol but is a different
@@ -188,6 +209,109 @@ fn build_body(
     body
 }
 
+/// One outcome of polling an SSE stream: a complete `data:` payload, a
+/// report that nothing has arrived for a while, or the end of the stream.
+pub(crate) enum Sse {
+    Data(String),
+    Silent { seconds: u64 },
+    Eof,
+}
+
+/// Line-oriented SSE reader that never blocks indefinitely.
+///
+/// The socket underneath has a short read timeout, so a stalled stream
+/// surfaces as WouldBlock/TimedOut polls instead of a frozen turn. Each poll
+/// checks the cancel flag (Ctrl+C stays responsive even when the endpoint
+/// says nothing), reports the silence, and gives up once it exceeds the
+/// stall budget — the failure mode of an overloaded or half-dead endpoint
+/// holding the connection open.
+pub(crate) struct SseStream<'a, R: Read> {
+    lines: BufReader<R>,
+    cancel: &'a AtomicBool,
+    stall: Duration,
+    last_progress: std::time::Instant,
+    line: String,
+    data: String,
+    ended: bool,
+}
+
+impl<'a, R: Read> SseStream<'a, R> {
+    pub fn new(reader: R, cancel: &'a AtomicBool, stall: Duration) -> SseStream<'a, R> {
+        SseStream {
+            lines: BufReader::new(reader),
+            cancel,
+            stall,
+            last_progress: std::time::Instant::now(),
+            line: String::new(),
+            data: String::new(),
+            ended: false,
+        }
+    }
+
+    pub fn next(&mut self) -> Result<Sse, ProviderError> {
+        if self.ended {
+            return Ok(Sse::Eof);
+        }
+        loop {
+            if self.cancel.load(Ordering::Relaxed) {
+                return Err(ProviderError::Cancelled);
+            }
+            self.line.clear();
+            match self.lines.read_line(&mut self.line) {
+                Ok(0) => {
+                    self.ended = true;
+                    return Ok(self.take_data().map(Sse::Data).unwrap_or(Sse::Eof));
+                }
+                Ok(_) => {
+                    self.last_progress = std::time::Instant::now();
+                    let trimmed = self.line.trim_end();
+                    if let Some(rest) = trimmed.strip_prefix("data:") {
+                        self.data.push_str(rest.trim_start());
+                    } else if trimmed.is_empty() && !self.data.is_empty() {
+                        let payload = self.take_data().expect("data is non-empty");
+                        return Ok(Sse::Data(payload));
+                    }
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    let silent = self.last_progress.elapsed();
+                    if silent >= self.stall {
+                        return Err(ProviderError::StreamDropped {
+                            // The caller knows whether anything was emitted;
+                            // it overwrites this before propagating.
+                            mid_turn: false,
+                            message: format!(
+                                "the model stream went silent for {}s",
+                                silent.as_secs()
+                            ),
+                        });
+                    }
+                    // Keep the loop from spinning on readers whose timeout
+                    // fires instantly (the test fakes); a real socket only
+                    // lands here once per read slice.
+                    std::thread::sleep(Duration::from_millis(1));
+                    return Ok(Sse::Silent {
+                        seconds: silent.as_secs(),
+                    });
+                }
+                Err(e) => return Err(ProviderError::Transport(e.to_string())),
+            }
+        }
+    }
+
+    fn take_data(&mut self) -> Option<String> {
+        if self.data.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.data))
+        }
+    }
+}
+
 /// One streamed model turn. `on_event` receives deltas for live rendering;
 /// the accumulated assistant content is returned when the stream ends.
 pub fn stream_turn(
@@ -212,9 +336,19 @@ pub fn stream_turn(
         attempt += 1;
         let cache = config.prompt_cache && !cache_rejected();
         let body = build_body(config, system, messages, tools, cache);
+        let payload = body.to_string();
+        crate::debug_log!(
+            "kimi request (attempt {attempt}): {} messages, {} tools, {} bytes",
+            messages.len(),
+            tools.len(),
+            payload.len()
+        );
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(15))
-            .timeout_read(Duration::from_secs(600))
+            // A short per-read slice is what lets the stream reader poll:
+            // a stalled endpoint surfaces as WouldBlock instead of freezing
+            // the turn for ten minutes.
+            .timeout_read(READ_SLICE)
             .build();
         let response = agent
             .post(&url)
@@ -223,10 +357,26 @@ pub fn stream_turn(
             .set("anthropic-version", "2023-06-01")
             .set("content-type", "application/json")
             .set("accept", "text/event-stream")
-            .send_string(&body.to_string());
+            .send_string(&payload);
 
         match response {
-            Ok(resp) => return read_stream(resp.into_reader(), cancel, on_event),
+            Ok(resp) => {
+                crate::debug_log!("kimi response headers received (attempt {attempt})");
+                match read_stream(resp.into_reader(), cancel, on_event, config.stream_stall) {
+                    // Dropped before the model said anything: the request is
+                    // idempotent and nothing was emitted, so retry in place.
+                    Err(ProviderError::StreamDropped { mid_turn, message })
+                        if !mid_turn && attempt < 4 =>
+                    {
+                        crate::debug_log!(
+                            "kimi stream dropped before any output (attempt {attempt}): {message}; retrying"
+                        );
+                        std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
+                        continue;
+                    }
+                    other => return other,
+                }
+            }
             Err(ureq::Error::Status(status, resp)) => {
                 let text = resp.into_string().unwrap_or_default();
                 // A rejected breakpoint is our fault, not the caller's: drop
@@ -238,13 +388,16 @@ pub fn stream_turn(
                     continue;
                 }
                 if retryable_status(status) && attempt < 4 {
+                    crate::debug_log!("kimi HTTP {status} (attempt {attempt}); retrying");
                     std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
                     continue;
                 }
                 let brief: String = text.chars().take(400).collect();
+                crate::debug_log!("kimi HTTP {status} (attempt {attempt}); giving up: {brief}");
                 return Err(ProviderError::Http(status, brief));
             }
             Err(ureq::Error::Transport(t)) => {
+                crate::debug_log!("kimi transport error (attempt {attempt}): {t}");
                 if attempt < 4 {
                     std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
                     continue;
@@ -259,135 +412,177 @@ fn read_stream(
     reader: impl Read,
     cancel: &AtomicBool,
     on_event: &mut dyn FnMut(StreamEvent),
+    stall: Duration,
 ) -> Result<TurnResult, ProviderError> {
-    let mut lines = BufReader::new(reader);
+    let mut sse = SseStream::new(reader, cancel, stall);
     let mut content: Vec<ContentBlock> = Vec::new();
     let mut thinking = String::new();
     let mut partial_json: Vec<String> = Vec::new();
     let mut stop_reason = String::from("end_turn");
     let mut usage = Usage::default();
-    let mut line = String::new();
-    let mut data = String::new();
+    let mut events = 0usize;
+    let mut saw_message_stop = false;
+    // True once the model has produced anything user-visible; a stream that
+    // dies after this point must not be silently retried (the retry would
+    // re-emit what is already on screen).
+    let mut emitted = false;
+    let started = std::time::Instant::now();
 
     loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ProviderError::Cancelled);
-        }
-        line.clear();
-        let n = lines
-            .read_line(&mut line)
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-        if n == 0 {
-            break;
-        }
-        let trimmed = line.trim_end();
-        if let Some(rest) = trimmed.strip_prefix("data:") {
-            data.push_str(rest.trim_start());
-        } else if trimmed.is_empty() && !data.is_empty() {
-            let event: Value = serde_json::from_str(&data)
-                .map_err(|e| ProviderError::Protocol(format!("bad SSE payload: {e}")))?;
-            data.clear();
-            match event["type"].as_str().unwrap_or("") {
-                "message_start" => {
-                    let reported = &event["message"]["usage"];
-                    if let Some(t) = reported["input_tokens"].as_u64() {
-                        usage.input_tokens = t;
-                    }
-                    if let Some(t) = reported["cache_creation_input_tokens"].as_u64() {
-                        usage.cache_write_tokens = t;
-                    }
-                    if let Some(t) = reported["cache_read_input_tokens"].as_u64() {
-                        usage.cache_read_tokens = t;
-                    }
-                }
-                "content_block_start" => {
-                    let block = &event["content_block"];
-                    match block["type"].as_str().unwrap_or("") {
-                        "text" => {
-                            content.push(ContentBlock::Text {
-                                text: String::new(),
-                            });
-                            partial_json.push(String::new());
-                        }
-                        "tool_use" => {
-                            let name = block["name"].as_str().unwrap_or("").to_string();
-                            on_event(StreamEvent::ToolUseStart { name: &name });
-                            content.push(ContentBlock::ToolUse {
-                                id: block["id"].as_str().unwrap_or("").to_string(),
-                                name,
-                                input: Value::Null,
-                                signature: None,
-                            });
-                            partial_json.push(String::new());
-                        }
-                        // A thinking block still occupies an index, so it
-                        // gets a placeholder to keep later deltas aligned;
-                        // the text goes to `thinking` and the placeholder is
-                        // dropped below.
-                        _ => {
-                            content.push(ContentBlock::Text {
-                                text: String::new(),
-                            });
-                            partial_json.push(String::new());
-                        }
-                    }
-                }
-                "content_block_delta" => {
-                    let index = event["index"].as_u64().unwrap_or(0) as usize;
-                    let delta = &event["delta"];
-                    match delta["type"].as_str().unwrap_or("") {
-                        "text_delta" => {
-                            let piece = delta["text"].as_str().unwrap_or("");
-                            on_event(StreamEvent::TextDelta(piece));
-                            if let Some(ContentBlock::Text { text }) = content.get_mut(index) {
-                                text.push_str(piece);
-                            }
-                        }
-                        "input_json_delta" => {
-                            let piece = delta["partial_json"].as_str().unwrap_or("");
-                            if let Some(slot) = partial_json.get_mut(index) {
-                                slot.push_str(piece);
-                            }
-                        }
-                        "thinking_delta" => {
-                            let piece = delta["thinking"].as_str().unwrap_or("");
-                            thinking.push_str(piece);
-                            on_event(StreamEvent::ThinkingDelta(piece));
-                        }
-                        _ => {}
-                    }
-                }
-                "content_block_stop" => {
-                    let index = event["index"].as_u64().unwrap_or(0) as usize;
-                    if let Some(ContentBlock::ToolUse { input, .. }) = content.get_mut(index) {
-                        let raw = partial_json.get(index).map(String::as_str).unwrap_or("");
-                        *input = if raw.trim().is_empty() {
-                            json!({})
-                        } else {
-                            serde_json::from_str(raw).unwrap_or(Value::String(raw.to_string()))
-                        };
-                    }
-                }
-                "message_delta" => {
-                    if let Some(reason) = event["delta"]["stop_reason"].as_str() {
-                        stop_reason = reason.to_string();
-                    }
-                    if let Some(t) = event["usage"]["output_tokens"].as_u64() {
-                        usage.output_tokens = t;
-                    }
-                }
-                "message_stop" => break,
-                "error" => {
-                    let msg = event["error"]["message"].as_str().unwrap_or("unknown");
-                    return Err(ProviderError::Protocol(format!("stream error: {msg}")));
-                }
-                _ => {}
+        let payload = match sse.next() {
+            Ok(Sse::Data(payload)) => payload,
+            Ok(Sse::Silent { seconds }) => {
+                on_event(StreamEvent::Silence { seconds });
+                continue;
             }
+            Ok(Sse::Eof) => break,
+            Err(ProviderError::StreamDropped { message, .. }) => {
+                return Err(ProviderError::StreamDropped {
+                    mid_turn: emitted,
+                    message,
+                });
+            }
+            Err(e) => return Err(e),
+        };
+        events += 1;
+        let event: Value = serde_json::from_str(&payload)
+            .map_err(|e| ProviderError::Protocol(format!("bad SSE payload: {e}")))?;
+        match event["type"].as_str().unwrap_or("") {
+            "message_start" => {
+                let reported = &event["message"]["usage"];
+                if let Some(t) = reported["input_tokens"].as_u64() {
+                    usage.input_tokens = t;
+                }
+                if let Some(t) = reported["cache_creation_input_tokens"].as_u64() {
+                    usage.cache_write_tokens = t;
+                }
+                if let Some(t) = reported["cache_read_input_tokens"].as_u64() {
+                    usage.cache_read_tokens = t;
+                }
+            }
+            "content_block_start" => {
+                let block = &event["content_block"];
+                match block["type"].as_str().unwrap_or("") {
+                    "text" => {
+                        content.push(ContentBlock::Text {
+                            text: String::new(),
+                        });
+                        partial_json.push(String::new());
+                    }
+                    "tool_use" => {
+                        let name = block["name"].as_str().unwrap_or("").to_string();
+                        on_event(StreamEvent::ToolUseStart { name: &name });
+                        emitted = true;
+                        content.push(ContentBlock::ToolUse {
+                            id: block["id"].as_str().unwrap_or("").to_string(),
+                            name,
+                            input: Value::Null,
+                            signature: None,
+                        });
+                        partial_json.push(String::new());
+                    }
+                    // A thinking block still occupies an index, so it
+                    // gets a placeholder to keep later deltas aligned;
+                    // the text goes to `thinking` and the placeholder is
+                    // dropped below.
+                    _ => {
+                        content.push(ContentBlock::Text {
+                            text: String::new(),
+                        });
+                        partial_json.push(String::new());
+                    }
+                }
+            }
+            "content_block_delta" => {
+                let index = event["index"].as_u64().unwrap_or(0) as usize;
+                let delta = &event["delta"];
+                match delta["type"].as_str().unwrap_or("") {
+                    "text_delta" => {
+                        let piece = delta["text"].as_str().unwrap_or("");
+                        on_event(StreamEvent::TextDelta(piece));
+                        emitted = true;
+                        if let Some(ContentBlock::Text { text }) = content.get_mut(index) {
+                            text.push_str(piece);
+                        }
+                    }
+                    "input_json_delta" => {
+                        let piece = delta["partial_json"].as_str().unwrap_or("");
+                        if let Some(slot) = partial_json.get_mut(index) {
+                            slot.push_str(piece);
+                        }
+                    }
+                    "thinking_delta" => {
+                        let piece = delta["thinking"].as_str().unwrap_or("");
+                        thinking.push_str(piece);
+                        on_event(StreamEvent::ThinkingDelta(piece));
+                        emitted = true;
+                    }
+                    _ => {}
+                }
+            }
+            "content_block_stop" => {
+                let index = event["index"].as_u64().unwrap_or(0) as usize;
+                if let Some(ContentBlock::ToolUse { input, .. }) = content.get_mut(index) {
+                    let raw = partial_json.get(index).map(String::as_str).unwrap_or("");
+                    *input = if raw.trim().is_empty() {
+                        json!({})
+                    } else {
+                        serde_json::from_str(raw).unwrap_or(Value::String(raw.to_string()))
+                    };
+                }
+            }
+            "message_delta" => {
+                if let Some(reason) = event["delta"]["stop_reason"].as_str() {
+                    stop_reason = reason.to_string();
+                }
+                if let Some(t) = event["usage"]["output_tokens"].as_u64() {
+                    usage.output_tokens = t;
+                }
+            }
+            "message_stop" => {
+                saw_message_stop = true;
+                break;
+            }
+            "error" => {
+                let msg = event["error"]["message"].as_str().unwrap_or("unknown");
+                return Err(ProviderError::Protocol(format!("stream error: {msg}")));
+            }
+            _ => {}
         }
     }
 
+    if !saw_message_stop {
+        // The connection ended mid-turn. A tool_use whose content_block_stop
+        // never arrived still carries a Null input — running it would feed
+        // the tool empty arguments, so the turn has to fail instead.
+        let unfinished_tool = content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolUse { input, .. } if input.is_null()));
+        if unfinished_tool {
+            crate::debug_log!("kimi stream ended mid tool call after {events} events");
+            return Err(ProviderError::StreamDropped {
+                mid_turn: emitted,
+                message: "the model stream ended in the middle of a tool call".into(),
+            });
+        }
+    }
     // Drop empty text blocks the protocol sometimes emits around tool use.
     content.retain(|block| !matches!(block, ContentBlock::Text { text } if text.is_empty()));
+    if !saw_message_stop && content.is_empty() && thinking.is_empty() {
+        crate::debug_log!("kimi stream ended before the turn completed ({events} events)");
+        return Err(ProviderError::StreamDropped {
+            mid_turn: emitted,
+            message: "the model stream ended before the turn completed".into(),
+        });
+    }
+    if !saw_message_stop {
+        crate::debug_log!("kimi stream ended without message_stop; keeping the partial turn");
+    }
+    crate::debug_log!(
+        "kimi stream done: {events} events, {} content blocks, {}ms",
+        content.len(),
+        started.elapsed().as_millis()
+    );
     Ok(TurnResult {
         content,
         thinking,
@@ -466,6 +661,7 @@ mod tests {
             workspace_root: std::path::PathBuf::from("/tmp"),
             prompt_cache: true,
             system_prompt_file: None,
+            stream_stall: Duration::from_secs(120),
         }
     }
 
@@ -570,7 +766,13 @@ mod stream_tests {
 
     fn read(body: &str) -> TurnResult {
         let cancel = AtomicBool::new(false);
-        read_stream(body.as_bytes(), &cancel, &mut |_| {}).expect("stream parses")
+        read_stream(
+            body.as_bytes(),
+            &cancel,
+            &mut |_| {},
+            Duration::from_secs(120),
+        )
+        .expect("stream parses")
     }
 
     fn thinking_block(index: u64, text: &str) -> Vec<Value> {
@@ -656,5 +858,192 @@ mod stream_tests {
         assert_eq!(turn.usage.input_tokens, 39);
         // 39 read fresh, 4416 from cache: the window is holding 4455.
         assert_eq!(turn.usage.context_tokens(), 4455);
+    }
+
+    /// A reader that mimics a stalled socket: every read times out
+    /// (WouldBlock) until `unblock_after` polls have passed, then it serves
+    /// the body. `None` never unblocks.
+    struct StalledReader<'a> {
+        body: &'a [u8],
+        sent: usize,
+        polls: usize,
+        unblock_after: Option<usize>,
+    }
+
+    impl std::io::Read for StalledReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let blocked = match self.unblock_after {
+                Some(n) => self.polls < n,
+                None => true,
+            };
+            if blocked {
+                self.polls += 1;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "timed out",
+                ));
+            }
+            let n = self.body.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.body[..n]);
+            self.sent += n;
+            self.body = &self.body[n..];
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_silent_stream_is_dropped_at_the_stall_budget() {
+        let cancel = AtomicBool::new(false);
+        let reader = StalledReader {
+            body: b"",
+            sent: 0,
+            polls: 0,
+            unblock_after: None,
+        };
+        let started = std::time::Instant::now();
+        let result = read_stream(reader, &cancel, &mut |_| {}, Duration::from_millis(50));
+        assert!(
+            matches!(
+                result,
+                Err(ProviderError::StreamDropped {
+                    mid_turn: false,
+                    ..
+                })
+            ),
+            "a stream that never says anything must fail, got {result:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the stall gave up too late"
+        );
+    }
+
+    #[test]
+    fn silence_reports_arrive_while_the_stream_is_quiet() {
+        let cancel = AtomicBool::new(false);
+        let body = sse(&[
+            json!({"type":"message_start","message":{"usage":{"input_tokens":10}}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}),
+            json!({"type":"message_stop"}),
+        ]);
+        let reader = StalledReader {
+            body: body.as_bytes(),
+            sent: 0,
+            polls: 0,
+            unblock_after: Some(4),
+        };
+        let mut silences = Vec::new();
+        let turn = read_stream(
+            reader,
+            &cancel,
+            &mut |event| {
+                if let StreamEvent::Silence { seconds } = event {
+                    silences.push(seconds);
+                }
+            },
+            Duration::from_secs(120),
+        )
+        .expect("the stream unblocks and parses");
+        assert_eq!(turn.stop_reason, "end_turn");
+        assert_eq!(
+            silences.len(),
+            4,
+            "one report per silent poll: {silences:?}"
+        );
+    }
+
+    #[test]
+    fn cancel_interrupts_a_silent_stream() {
+        let cancel = AtomicBool::new(false);
+        let flag = &cancel;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                flag.store(true, Ordering::Relaxed);
+            });
+            let reader = StalledReader {
+                body: b"",
+                sent: 0,
+                polls: 0,
+                unblock_after: None,
+            };
+            let started = std::time::Instant::now();
+            let result = read_stream(reader, &cancel, &mut |_| {}, Duration::from_secs(120));
+            assert!(
+                matches!(result, Err(ProviderError::Cancelled)),
+                "got {result:?}"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "Ctrl+C must not wait out the stall budget"
+            );
+        });
+    }
+
+    #[test]
+    fn eof_mid_tool_call_fails_instead_of_running_empty_arguments() {
+        // The connection drops after the input_json started but before
+        // content_block_stop — the tool_use still holds a Null input.
+        let body = sse(&[
+            json!({"type":"message_start","message":{"usage":{"input_tokens":10}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file"}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}),
+        ]);
+        let cancel = AtomicBool::new(false);
+        let result = read_stream(
+            body.as_bytes(),
+            &cancel,
+            &mut |_| {},
+            Duration::from_secs(120),
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ProviderError::StreamDropped { mid_turn: true, .. })
+            ),
+            "a truncated tool call must fail the turn, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn eof_before_any_output_is_retriable() {
+        let cancel = AtomicBool::new(false);
+        let result = read_stream(
+            "".as_bytes(),
+            &cancel,
+            &mut |_| {},
+            Duration::from_secs(120),
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ProviderError::StreamDropped {
+                    mid_turn: false,
+                    ..
+                })
+            ),
+            "an empty stream must be flagged retriable, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn a_partial_text_answer_survives_a_dropped_stream() {
+        // Text arrived, then the connection ended without message_stop. The
+        // partial answer is kept (retrying would duplicate it on screen).
+        let body = sse(&[
+            json!({"type":"message_start","message":{"usage":{"input_tokens":10}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text"}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"half an ans"}}),
+            json!({"type":"content_block_stop","index":0}),
+        ]);
+        let cancel = AtomicBool::new(false);
+        let turn = read_stream(
+            body.as_bytes(),
+            &cancel,
+            &mut |_| {},
+            Duration::from_secs(120),
+        )
+        .expect("a partial answer is better than none");
+        assert!(matches!(&turn.content[0], ContentBlock::Text { text } if text == "half an ans"));
     }
 }
