@@ -454,14 +454,16 @@ when two of them disagree the one scoped nearest the files being touched wins.
 | `ODEI_PERMISSIONS` | `ask` / `auto` / `yolo` |
 | `ODEI_DETAIL` | `collapsed` / `normal` / `expanded` — how much of each tool call to draw |
 | `ODEI_MAX_AGENT_STEPS` | agent loop step cap (default 120) |
+| `ODEI_STREAM_STALL_MS` | how long the model stream may stay silent before the request is retried (default 120000) |
+| `ODEI_DEBUG` | `1` to trace requests, retries, stream silence and tool runtimes to `~/.odei/debug/<date>.log`; or a path to log elsewhere |
 | `ODEI_THEME` | `light` / `dark` (auto-detected otherwise) |
 | `ODEI_MARKDOWN` | `off` to print the model's markdown source verbatim |
 | `ODEI_SPLASH` | `off` for the one-line greeting, `static` for the settled wordmark |
 | `NO_COLOR` | disable styling |
 
 Profile data lives in `~/.odei`: `config.json`, `permissions.json`, `sessions/*.jsonl`,
-`tool-results/`, `calls/`, `usage.jsonl`, `history`. Stored tool results and call
-journals are pruned after 7 days.
+`tool-results/`, `calls/`, `usage.jsonl`, `history`, and `debug/` when `ODEI_DEBUG` is on.
+Stored tool results, call journals and debug logs are pruned after 7 days.
 
 ## macOS app
 

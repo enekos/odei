@@ -215,6 +215,12 @@ pub struct Config {
     /// Override for the system prompt, for A/B-ing prompt changes under
     /// `odei eval` (ODEI_SYSTEM_PROMPT_FILE).
     pub system_prompt_file: Option<PathBuf>,
+    /// How long the model stream may stay silent before the request is
+    /// aborted and retried (ODEI_STREAM_STALL_MS, default two minutes).
+    /// Endpoints occasionally hold a connection open without sending; without
+    /// a budget the turn hangs with no way to tell a slow model from a dead
+    /// stream.
+    pub stream_stall: std::time::Duration,
 }
 
 pub fn odei_home() -> PathBuf {
@@ -338,6 +344,13 @@ impl Config {
             .map(PathBuf::from)
             .filter(|p| p.exists());
 
+        let stream_stall = std::env::var("ODEI_STREAM_STALL_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&ms| ms > 0)
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(std::time::Duration::from_secs(120));
+
         Config {
             api_key,
             key_source,
@@ -350,6 +363,7 @@ impl Config {
             workspace_root: workspace_root.to_path_buf(),
             prompt_cache,
             system_prompt_file,
+            stream_stall,
         }
     }
 

@@ -447,6 +447,7 @@ pub fn help() -> i32 {
     println!();
     println!("environment: KIMI_API_KEY, GEMINI_API_KEY, ODEI_PROVIDER, ODEI_MODEL,");
     println!("             ODEI_BASE_URL, ODEI_PERMISSIONS, ODEI_MAX_AGENT_STEPS,");
-    println!("             ODEI_PROMPT_CACHE, ODEI_SYSTEM_PROMPT_FILE, ODEI_EVAL_DIR");
+    println!("             ODEI_PROMPT_CACHE, ODEI_SYSTEM_PROMPT_FILE, ODEI_EVAL_DIR,");
+    println!("             ODEI_STREAM_STALL_MS, ODEI_DEBUG");
     0
 }

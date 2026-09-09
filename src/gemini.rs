@@ -5,10 +5,12 @@
 //! at the boundary in both directions.
 
 use crate::config::Config;
-use crate::provider::{ContentBlock, Message, ProviderError, StreamEvent, TurnResult, Usage};
+use crate::provider::{
+    ContentBlock, Message, ProviderError, Sse, SseStream, StreamEvent, TurnResult, Usage,
+};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -156,29 +158,56 @@ pub fn stream_turn(
         }
         attempt += 1;
         let body = build_body(config, system, messages, tools);
+        let payload = body.to_string();
+        crate::debug_log!(
+            "gemini request (attempt {attempt}): {} messages, {} tools, {} bytes",
+            messages.len(),
+            tools.len(),
+            payload.len()
+        );
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(15))
-            .timeout_read(Duration::from_secs(600))
+            // Same polling discipline as the Kimi client: a stalled stream
+            // surfaces as WouldBlock polls, never a frozen turn.
+            .timeout_read(crate::provider::READ_SLICE)
             .build();
         let response = agent
             .post(&url)
             .set("x-goog-api-key", key)
             .set("content-type", "application/json")
             .set("accept", "text/event-stream")
-            .send_string(&body.to_string());
+            .send_string(&payload);
 
         match response {
-            Ok(resp) => return read_stream(resp.into_reader(), cancel, on_event),
+            Ok(resp) => {
+                crate::debug_log!("gemini response headers received (attempt {attempt})");
+                match read_stream(resp.into_reader(), cancel, on_event, config.stream_stall) {
+                    // Dropped before the model said anything: safe to retry.
+                    Err(ProviderError::StreamDropped { mid_turn, message })
+                        if !mid_turn && attempt < 4 =>
+                    {
+                        crate::debug_log!(
+                            "gemini stream dropped before any output (attempt {attempt}): {message}; retrying"
+                        );
+                        std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
+                        continue;
+                    }
+                    other => return other,
+                }
+            }
             Err(ureq::Error::Status(status, resp)) => {
                 let text = resp.into_string().unwrap_or_default();
                 if retryable_status(status) && attempt < 4 {
+                    crate::debug_log!("gemini HTTP {status} (attempt {attempt}); retrying");
                     std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
                     continue;
                 }
                 let brief: String = text.chars().take(400).collect();
+                crate::debug_log!("gemini HTTP {status} (attempt {attempt}); giving up: {brief}");
                 return Err(ProviderError::Http(status, brief));
             }
             Err(ureq::Error::Transport(t)) => {
+                crate::debug_log!("gemini transport error (attempt {attempt}): {t}");
                 if attempt < 4 {
                     std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
                     continue;
@@ -201,6 +230,7 @@ struct StreamState {
 fn apply_chunk(
     chunk: &Value,
     state: &mut StreamState,
+    emitted: &mut bool,
     on_event: &mut dyn FnMut(StreamEvent),
 ) -> Result<(), ProviderError> {
     if chunk["error"].is_object() {
@@ -214,13 +244,16 @@ fn apply_chunk(
                 let piece = part["text"].as_str().unwrap_or("");
                 state.thinking.push_str(piece);
                 on_event(StreamEvent::ThinkingDelta(piece));
+                *emitted = true;
             } else if let Some(piece) = part["text"].as_str() {
                 state.text.push_str(piece);
                 on_event(StreamEvent::TextDelta(piece));
+                *emitted = true;
             } else if part["functionCall"].is_object() {
                 let call = &part["functionCall"];
                 let name = call["name"].as_str().unwrap_or("").to_string();
                 on_event(StreamEvent::ToolUseStart { name: &name });
+                *emitted = true;
                 let id = format!("{name}-{}", CALL_COUNTER.fetch_add(1, Ordering::Relaxed));
                 let args = call["args"].clone();
                 state.calls.push(ContentBlock::ToolUse {
@@ -252,35 +285,41 @@ fn read_stream(
     reader: impl Read,
     cancel: &AtomicBool,
     on_event: &mut dyn FnMut(StreamEvent),
+    stall: Duration,
 ) -> Result<TurnResult, ProviderError> {
-    let mut lines = BufReader::new(reader);
+    let mut sse = SseStream::new(reader, cancel, stall);
     let mut state = StreamState::default();
-    let mut line = String::new();
-    let mut data = String::new();
+    let mut events = 0usize;
+    let mut emitted = false;
+    let started = std::time::Instant::now();
 
     loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ProviderError::Cancelled);
-        }
-        line.clear();
-        let n = lines
-            .read_line(&mut line)
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-        let at_end = n == 0;
-        let trimmed = line.trim_end();
-        if let Some(rest) = trimmed.strip_prefix("data:") {
-            data.push_str(rest.trim_start());
-        } else if (trimmed.is_empty() || at_end) && !data.is_empty() {
-            let chunk: Value = serde_json::from_str(&data)
-                .map_err(|e| ProviderError::Protocol(format!("bad SSE payload: {e}")))?;
-            data.clear();
-            apply_chunk(&chunk, &mut state, on_event)?;
-        }
-        if at_end {
-            break;
-        }
+        let payload = match sse.next() {
+            Ok(Sse::Data(payload)) => payload,
+            Ok(Sse::Silent { seconds }) => {
+                on_event(StreamEvent::Silence { seconds });
+                continue;
+            }
+            Ok(Sse::Eof) => break,
+            Err(ProviderError::StreamDropped { message, .. }) => {
+                return Err(ProviderError::StreamDropped {
+                    mid_turn: emitted,
+                    message,
+                });
+            }
+            Err(e) => return Err(e),
+        };
+        events += 1;
+        let chunk: Value = serde_json::from_str(&payload)
+            .map_err(|e| ProviderError::Protocol(format!("bad SSE payload: {e}")))?;
+        apply_chunk(&chunk, &mut state, &mut emitted, on_event)?;
     }
 
+    crate::debug_log!(
+        "gemini stream done: {events} events, {} content blocks, {}ms",
+        state.calls.len() + usize::from(!state.text.is_empty()),
+        started.elapsed().as_millis()
+    );
     let StreamState {
         text,
         thinking,
@@ -345,6 +384,7 @@ mod tests {
             workspace_root: std::path::PathBuf::from("/tmp"),
             prompt_cache: true,
             system_prompt_file: None,
+            stream_stall: Duration::from_secs(120),
         }
     }
 
@@ -483,7 +523,13 @@ mod tests {
 
     fn read(body: &str) -> TurnResult {
         let cancel = AtomicBool::new(false);
-        read_stream(body.as_bytes(), &cancel, &mut |_| {}).expect("stream parses")
+        read_stream(
+            body.as_bytes(),
+            &cancel,
+            &mut |_| {},
+            Duration::from_secs(120),
+        )
+        .expect("stream parses")
     }
 
     #[test]
@@ -570,7 +616,37 @@ mod tests {
     fn an_error_chunk_fails_the_turn() {
         let events = [json!({"error": {"message": "API key not valid", "code": 400}})];
         let cancel = AtomicBool::new(false);
-        let result = read_stream(sse(&events).as_bytes(), &cancel, &mut |_| {});
+        let result = read_stream(
+            sse(&events).as_bytes(),
+            &cancel,
+            &mut |_| {},
+            Duration::from_secs(120),
+        );
         assert!(matches!(result, Err(ProviderError::Protocol(msg)) if msg.contains("API key")));
+    }
+
+    #[test]
+    fn a_stalled_stream_is_dropped_at_the_stall_budget() {
+        struct Silent;
+        impl std::io::Read for Silent {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "timed out",
+                ))
+            }
+        }
+        let cancel = AtomicBool::new(false);
+        let result = read_stream(Silent, &cancel, &mut |_| {}, Duration::from_millis(50));
+        assert!(
+            matches!(
+                result,
+                Err(ProviderError::StreamDropped {
+                    mid_turn: false,
+                    ..
+                })
+            ),
+            "a silent stream must fail at the budget, got {result:?}"
+        );
     }
 }

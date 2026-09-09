@@ -12,6 +12,7 @@ mod compact;
 mod complete;
 mod config;
 mod context;
+mod debug;
 mod diff;
 mod eval;
 mod gemini;

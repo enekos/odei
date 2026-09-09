@@ -284,6 +284,26 @@ impl Sink for ShellSink<'_> {
         self.blinker = Blinker::maybe_start(self.theme, true);
     }
 
+    fn on_silence(&mut self, seconds: u64) {
+        // Only the waiting line gets the heartbeat — mid-answer the markdown
+        // renderer owns the screen and a stall is still bounded by the
+        // provider's retry/abort logic (and visible in the debug log).
+        if !self.interactive || !self.waiting_line {
+            return;
+        }
+        self.clear_transient();
+        print!(
+            "{}{}… {seconds}s without a word from the model — Ctrl+C to give up{}",
+            self.theme.dim,
+            theme::ASK_ACTIVITY_LABEL,
+            self.theme.reset()
+        );
+        let _ = std::io::stdout().flush();
+        self.waiting_line = true;
+        println!();
+        self.blinker = Blinker::maybe_start(self.theme, true);
+    }
+
     fn on_thinking(&mut self, text: &str) {
         if !self.interactive || !self.detail.shows_thinking() {
             return;
