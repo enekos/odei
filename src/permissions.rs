@@ -70,11 +70,46 @@ fn rule_matches(rule: &Rule, tool: &str, target: &str) -> bool {
         return true;
     }
     if tool == "terminal" {
-        // Command rules match on first-token prefix: "cargo" allows any cargo …
-        target.trim().starts_with(rule.target.trim())
+        command_rule_matches(rule.target.trim(), target.trim())
     } else {
         target == rule.target
     }
+}
+
+fn command_rule_matches(rule: &str, command: &str) -> bool {
+    let rule_tokens: Vec<&str> = rule.split_whitespace().collect();
+    let command_tokens: Vec<&str> = command.split_whitespace().collect();
+    if rule_tokens.is_empty() {
+        return false;
+    }
+    if command_is_sensitive(command) {
+        return command_is_sensitive(rule) && command_tokens == rule_tokens;
+    }
+    command_tokens.len() >= rule_tokens.len()
+        && command_tokens[..rule_tokens.len()] == rule_tokens[..]
+}
+
+pub fn remembered_target(tool: &str, target: &str) -> String {
+    if tool != "terminal" {
+        return target.to_string();
+    }
+    let command = target.trim();
+    if command_is_sensitive(command) {
+        return command.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    let mut tokens = command
+        .split_whitespace()
+        .skip_while(|t| t.contains('=') && !t.starts_with('-'));
+    let mut remembered = Vec::new();
+    if let Some(program) = tokens.next() {
+        remembered.push(program);
+        if let Some(sub) = tokens.next() {
+            if !sub.starts_with('-') {
+                remembered.push(sub);
+            }
+        }
+    }
+    remembered.join(" ")
 }
 
 /// Commands that stay sensitive even in auto mode. Conservative on purpose:
@@ -272,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn remembered_rule_matches_command_prefix() {
+    fn remembered_routine_rule_never_allows_a_sensitive_command() {
         let mut rules = RuleStore::default();
         rules.rules.push(Rule {
             id: "rule-1".into(),
@@ -280,13 +315,117 @@ mod tests {
             tool: "terminal".into(),
             target: "git".into(),
         });
-        let decision = classify(
-            &ctx(),
-            &rules,
-            PermissionMode::Ask,
-            spec("terminal"),
-            &json!({"action": "exec", "command": "git push origin main"}),
+        let decide = |command: &str, mode| {
+            classify(
+                &ctx(),
+                &rules,
+                mode,
+                spec("terminal"),
+                &json!({"action": "exec", "command": command}),
+            )
+        };
+        assert_eq!(decide("git status", PermissionMode::Ask), Decision::Allow);
+        assert_eq!(
+            decide("git  log --oneline", PermissionMode::Ask),
+            Decision::Allow
         );
-        assert_eq!(decision, Decision::Allow);
+        for mode in [PermissionMode::Ask, PermissionMode::Auto] {
+            assert_eq!(
+                decide("git push origin main", mode),
+                Decision::NeedsApproval
+            );
+            assert_eq!(decide("git push --force", mode), Decision::NeedsApproval);
+            assert_eq!(
+                decide("git reset --hard HEAD~3", mode),
+                Decision::NeedsApproval
+            );
+        }
+        assert_eq!(decide("gitk", PermissionMode::Ask), Decision::NeedsApproval);
+        assert_eq!(
+            decide("github-cli auth", PermissionMode::Ask),
+            Decision::NeedsApproval
+        );
+    }
+
+    #[test]
+    fn remembered_sensitive_rule_allows_only_that_command() {
+        let mut rules = RuleStore::default();
+        rules.rules.push(Rule {
+            id: "rule-1".into(),
+            effect: "allow".into(),
+            tool: "terminal".into(),
+            target: "git push origin main".into(),
+        });
+        let decide = |command: &str| {
+            classify(
+                &ctx(),
+                &rules,
+                PermissionMode::Ask,
+                spec("terminal"),
+                &json!({"action": "exec", "command": command}),
+            )
+        };
+        assert_eq!(decide("git push origin main"), Decision::Allow);
+        assert_eq!(
+            decide("git push origin main --force"),
+            Decision::NeedsApproval
+        );
+        assert_eq!(decide("git push origin master"), Decision::NeedsApproval);
+        assert_eq!(decide("git push"), Decision::NeedsApproval);
+    }
+
+    #[test]
+    fn remembered_target_keeps_two_tokens_for_routine_and_everything_for_sensitive() {
+        assert_eq!(
+            remembered_target("terminal", "git status --short"),
+            "git status"
+        );
+        assert_eq!(remembered_target("terminal", "cargo test"), "cargo test");
+        assert_eq!(remembered_target("terminal", "ls -la src"), "ls");
+        assert_eq!(remembered_target("terminal", "make"), "make");
+        assert_eq!(
+            remembered_target("terminal", "RUST_LOG=debug cargo run -- x"),
+            "cargo run"
+        );
+        assert_eq!(
+            remembered_target("terminal", "  git push   origin main "),
+            "git push origin main"
+        );
+        assert_eq!(
+            remembered_target("terminal", "rm -rf target"),
+            "rm -rf target"
+        );
+        assert_eq!(
+            remembered_target("terminal", "git commit --amend"),
+            "git commit --amend"
+        );
+        assert_eq!(remembered_target("write_file", "/etc/hosts"), "/etc/hosts");
+    }
+
+    #[test]
+    fn a_rule_saved_from_a_routine_command_does_not_widen_to_its_sensitive_sibling() {
+        let mut rules = RuleStore::default();
+        let target = remembered_target("terminal", "git commit -m 'wip'");
+        remember_allow_in_memory(&mut rules, "terminal", &target);
+        let decide = |command: &str| {
+            classify(
+                &ctx(),
+                &rules,
+                PermissionMode::Ask,
+                spec("terminal"),
+                &json!({"action": "exec", "command": command}),
+            )
+        };
+        assert_eq!(decide("git commit -m 'more'"), Decision::Allow);
+        assert_eq!(decide("git commit --amend"), Decision::NeedsApproval);
+    }
+
+    fn remember_allow_in_memory(store: &mut RuleStore, tool: &str, target: &str) {
+        store.rules.push(Rule {
+            id: format!("rule-{}", store.rules.len() + 1),
+            effect: "allow".into(),
+            tool: tool.into(),
+            target: target.into(),
+        });
     }
 }
