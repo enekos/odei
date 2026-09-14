@@ -4,6 +4,11 @@ version = "0.2.1"
 edition = "2021"
 description = "Tiny native coding agent for the terminal, powered by Kimi or Gemini."
 license = "Apache-2.0"
+repository = "https://github.com/enekos/odei"
+homepage = "https://github.com/enekos/odei"
+keywords = ["agent", "cli", "ai", "llm", "coding"]
+categories = ["command-line-utilities"]
+exclude = ["ui/", ".github/", "ascii-art.txt"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
