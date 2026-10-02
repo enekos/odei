@@ -14,6 +14,7 @@ fn get(url: &str) -> Result<(String, String), String> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
         .redirects(4)
         .build();
     let response = agent

@@ -21,6 +21,7 @@ mod markdown;
 mod mentions;
 mod permissions;
 mod provider;
+mod runaway;
 mod serve;
 mod session;
 mod splash;

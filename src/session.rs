@@ -2,7 +2,7 @@
 //! followed by one line per message. Usage accounting appends to
 //! ~/.odei/usage.jsonl.
 
-use crate::provider::{Message, Usage};
+use crate::provider::{ContentBlock, Message, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs::OpenOptions;
@@ -66,11 +66,17 @@ impl Session {
                 messages.push(message);
             }
         }
-        Some(Session {
+        let repairs = repair(&mut messages);
+        let session = Session {
             meta,
             messages,
             path,
-        })
+        };
+        if repairs > 0 {
+            crate::debug_log!("session {id}: repaired {repairs} transcript defects on open");
+            session.rewrite();
+        }
+        Some(session)
     }
 
     pub fn append(&mut self, message: Message) {
@@ -103,6 +109,75 @@ impl Session {
         }
         let _ = std::fs::write(&self.path, out);
     }
+}
+
+pub const INTERRUPTED_RESULT: &str =
+    "interrupted: odei stopped before this call returned a result, so it may or may not have run";
+
+pub fn repair(messages: &mut Vec<Message>) -> usize {
+    let mut repairs = 0;
+    let before = messages.len();
+    messages.retain(|message| !(message.role == "assistant" && message.content.is_empty()));
+    repairs += before - messages.len();
+
+    let mut index = 0;
+    while index < messages.len() {
+        if messages[index].role != "assistant" {
+            index += 1;
+            continue;
+        }
+        let mut calls: Vec<String> = Vec::new();
+        for block in &mut messages[index].content {
+            if let ContentBlock::ToolUse { id, input, .. } = block {
+                if !input.is_object() {
+                    *input = json!({});
+                    repairs += 1;
+                }
+                calls.push(id.clone());
+            }
+        }
+        if calls.is_empty() {
+            index += 1;
+            continue;
+        }
+        let answered: Vec<String> = match messages.get(index + 1) {
+            Some(next) if next.role == "user" => next
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let missing: Vec<ContentBlock> = calls
+            .into_iter()
+            .filter(|id| !answered.contains(id))
+            .map(|tool_use_id| ContentBlock::ToolResult {
+                tool_use_id,
+                content: INTERRUPTED_RESULT.into(),
+                is_error: true,
+            })
+            .collect();
+        if !missing.is_empty() {
+            repairs += missing.len();
+            match messages.get_mut(index + 1) {
+                Some(next) if next.role == "user" => {
+                    next.content.splice(0..0, missing);
+                }
+                _ => messages.insert(
+                    index + 1,
+                    Message {
+                        role: "user".into(),
+                        content: missing,
+                    },
+                ),
+            }
+        }
+        index += 2;
+    }
+    repairs
 }
 
 pub struct SessionSummary {
@@ -169,5 +244,119 @@ pub fn record_usage(model: &str, usage: Usage) {
     });
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{line}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(id: &str, input: serde_json::Value) -> ContentBlock {
+        ContentBlock::ToolUse {
+            id: id.into(),
+            name: "terminal".into(),
+            input,
+            signature: None,
+        }
+    }
+
+    fn result(id: &str) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: id.into(),
+            content: "ok".into(),
+            is_error: false,
+        }
+    }
+
+    fn assistant(content: Vec<ContentBlock>) -> Message {
+        Message {
+            role: "assistant".into(),
+            content,
+        }
+    }
+
+    fn user(content: Vec<ContentBlock>) -> Message {
+        Message {
+            role: "user".into(),
+            content,
+        }
+    }
+
+    fn result_ids(message: &Message) -> Vec<&str> {
+        message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_session_killed_mid_tool_gets_its_missing_results() {
+        let mut messages = vec![
+            Message::user_text("list the files"),
+            assistant(vec![call("a", json!({"action": "exec"}))]),
+        ];
+        assert_eq!(repair(&mut messages), 1);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(result_ids(&messages[2]), ["a"]);
+    }
+
+    #[test]
+    fn a_half_answered_batch_is_completed_in_place() {
+        let mut messages = vec![
+            Message::user_text("go"),
+            assistant(vec![call("a", json!({})), call("b", json!({}))]),
+            user(vec![result("a")]),
+        ];
+        assert_eq!(repair(&mut messages), 1);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(result_ids(&messages[2]), ["b", "a"]);
+    }
+
+    #[test]
+    fn results_go_ahead_of_a_following_user_prompt() {
+        let mut messages = vec![
+            Message::user_text("go"),
+            assistant(vec![call("a", json!({}))]),
+            Message::user_text("are you there?"),
+        ];
+        assert_eq!(repair(&mut messages), 1);
+        assert_eq!(result_ids(&messages[2]), ["a"]);
+        assert!(matches!(messages[2].content[1], ContentBlock::Text { .. }));
+    }
+
+    #[test]
+    fn string_arguments_and_empty_turns_are_cleaned() {
+        let mut messages = vec![
+            Message::user_text("go"),
+            assistant(vec![]),
+            assistant(vec![call(
+                "a",
+                json!("{\"command\":\"ls\",\"x_default_default"),
+            )]),
+            user(vec![result("a")]),
+        ];
+        assert_eq!(repair(&mut messages), 2);
+        assert_eq!(messages.len(), 3);
+        assert!(
+            matches!(&messages[1].content[0], ContentBlock::ToolUse { input, .. } if input.is_object())
+        );
+    }
+
+    #[test]
+    fn a_healthy_transcript_is_untouched() {
+        let mut messages = vec![
+            Message::user_text("go"),
+            assistant(vec![call("a", json!({}))]),
+            user(vec![result("a")]),
+            assistant(vec![ContentBlock::Text {
+                text: "done".into(),
+            }]),
+        ];
+        assert_eq!(repair(&mut messages), 0);
+        assert_eq!(messages.len(), 4);
     }
 }

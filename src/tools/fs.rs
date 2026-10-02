@@ -248,6 +248,9 @@ pub fn glob_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         .filter_entry(|e| !(e.file_type().is_dir() && skip_dir(&e.file_name().to_string_lossy())))
         .flatten()
     {
+        if ctx.cancelled() {
+            return ToolOutcome::err("interrupted by the user before the search finished");
+        }
         if !entry.file_type().is_file() {
             continue;
         }
@@ -324,6 +327,9 @@ pub fn grep_files(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         .filter_entry(|e| !(e.file_type().is_dir() && skip_dir(&e.file_name().to_string_lossy())))
         .flatten()
     {
+        if ctx.cancelled() {
+            return ToolOutcome::err("interrupted by the user before the search finished");
+        }
         if !entry.file_type().is_file() {
             continue;
         }
@@ -594,6 +600,9 @@ pub fn semantic_search(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         .filter_entry(|e| !(e.file_type().is_dir() && skip_dir(&e.file_name().to_string_lossy())))
         .flatten()
     {
+        if ctx.cancelled() {
+            return ToolOutcome::err("interrupted by the user before the search finished");
+        }
         if !entry.file_type().is_file() {
             continue;
         }

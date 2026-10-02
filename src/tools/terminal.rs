@@ -218,13 +218,14 @@ fn exec(ctx: &ToolContext, input: &Value) -> ToolOutcome {
     }
 
     let started = Instant::now();
+    let mut interrupted = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {
-                if started.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                interrupted = ctx.cancelled();
+                if interrupted || started.elapsed() > timeout {
+                    stop_child(child.as_mut());
                     break None;
                 }
                 std::thread::sleep(Duration::from_millis(20));
@@ -249,11 +250,41 @@ fn exec(ctx: &ToolContext, input: &Value) -> ToolOutcome {
                 ToolOutcome::err(text)
             }
         }
+        None if interrupted => ToolOutcome::err(format!(
+            "{captured}\ninterrupted by the user after {}ms and was killed.",
+            started.elapsed().as_millis()
+        )),
         None => ToolOutcome::err(format!(
             "{captured}\ntimed out after {}ms and was killed. For something long-running or interactive, use action=start instead.",
             timeout.as_millis()
         )),
     }
+}
+
+fn signal_group(pid: u32, signo: libc::c_int) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: kill(2) takes plain integers and touches no memory of ours; a
+    // stale pid fails with ESRCH rather than misbehaving.
+    unsafe { libc::kill(-pid, signo) == 0 || libc::kill(pid, signo) == 0 }
+}
+
+fn stop_child(child: &mut (dyn portable_pty::Child + Send + Sync)) {
+    if let Some(pid) = child.process_id() {
+        signal_group(pid, libc::SIGTERM);
+        let grace = Instant::now();
+        while grace.elapsed() < Duration::from_millis(500) {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                signal_group(pid, libc::SIGKILL);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        signal_group(pid, libc::SIGKILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn start(ctx: &ToolContext, input: &Value) -> ToolOutcome {
@@ -403,6 +434,11 @@ fn wait(ctx: &ToolContext, input: &Value) -> ToolOutcome {
                     return ToolOutcome::ok(format!("session exited with code {code}"));
                 }
                 Ok(None) => {
+                    if ctx.cancelled() {
+                        return ToolOutcome::err(
+                            "stopped waiting: interrupted by the user. The session is still running.",
+                        );
+                    }
                     if started.elapsed() > ceiling {
                         return ToolOutcome::ok(format!(
                             "still running after the {}ms ceiling",
@@ -450,11 +486,9 @@ fn signal(ctx: &ToolContext, input: &Value) -> ToolOutcome {
         let Some(pid) = session.child.process_id() else {
             return ToolOutcome::err("session has no live process");
         };
-        let pid = pid as i32;
         // The child leads its own process group under a pty, so signalling the
         // group reaches anything it spawned; fall back to the process itself.
-        let delivered = unsafe { libc::kill(-pid, signo) == 0 || libc::kill(pid, signo) == 0 };
-        if delivered {
+        if signal_group(pid, signo) {
             ToolOutcome::ok(format!("delivered {name}"))
         } else {
             ToolOutcome::err(format!(
@@ -536,6 +570,38 @@ mod pty_tests {
 
     fn ctx() -> ToolContext {
         ToolContext::new(std::path::Path::new("/tmp"))
+    }
+
+    #[test]
+    fn ctrl_c_stops_a_running_command_and_its_children() {
+        static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let ctx = ToolContext {
+            cancel: &STOP,
+            ..ctx()
+        };
+        let marker = std::env::temp_dir().join(format!("odei-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let command = format!("(sleep 3; touch {}) & sleep 30", marker.display());
+        let started = Instant::now();
+        let out = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(300));
+                STOP.store(true, Ordering::Relaxed);
+            });
+            terminal(&ctx, &json!({"action": "exec", "command": command}))
+        });
+        assert!(out.is_error);
+        assert!(out.text.contains("interrupted by the user"), "{}", out.text);
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "took {:?}",
+            started.elapsed()
+        );
+        std::thread::sleep(Duration::from_secs(4));
+        assert!(
+            !marker.exists(),
+            "a background child outlived the interrupt"
+        );
     }
 
     #[test]
