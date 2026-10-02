@@ -304,6 +304,24 @@ impl Sink for ShellSink<'_> {
         self.blinker = Blinker::maybe_start(self.theme, true);
     }
 
+    fn on_tool_args(&mut self, tool: &str, bytes: usize) {
+        if !self.interactive || !self.waiting_line {
+            return;
+        }
+        self.clear_transient();
+        print!(
+            "{}{}… writing a {tool} call · {} KB — Ctrl+C to give up{}",
+            self.theme.dim,
+            theme::ASK_ACTIVITY_LABEL,
+            bytes / 1024,
+            self.theme.reset()
+        );
+        let _ = std::io::stdout().flush();
+        self.waiting_line = true;
+        println!();
+        self.blinker = Blinker::maybe_start(self.theme, true);
+    }
+
     fn on_thinking(&mut self, text: &str) {
         if !self.interactive || !self.detail.shows_thinking() {
             return;

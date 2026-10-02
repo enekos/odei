@@ -5,6 +5,7 @@
 use crate::config::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -80,7 +81,10 @@ pub struct TurnResult {
     pub thinking: String,
     pub stop_reason: String,
     pub usage: Usage,
+    pub rejected: HashMap<String, String>,
 }
+
+pub const STOP_REPETITION: &str = "repetition";
 
 #[allow(dead_code)]
 pub enum StreamEvent<'a> {
@@ -93,6 +97,10 @@ pub enum StreamEvent<'a> {
     /// line use it to prove the turn is alive; everyone else ignores it.
     Silence {
         seconds: u64,
+    },
+    ToolArgs {
+        name: &'a str,
+        bytes: usize,
     },
 }
 
@@ -111,6 +119,7 @@ pub enum ProviderError {
         mid_turn: bool,
         message: String,
     },
+    ContextOverflow(String),
 }
 
 pub const MISSING_KEY_HINT: &str =
@@ -127,12 +136,54 @@ impl std::fmt::Display for ProviderError {
             ProviderError::Transport(msg) => write!(f, "network failure: {msg}"),
             ProviderError::Protocol(msg) => write!(f, "unexpected model response: {msg}"),
             ProviderError::StreamDropped { message, .. } => write!(f, "{message}"),
+            ProviderError::ContextOverflow(body) => {
+                write!(
+                    f,
+                    "the conversation no longer fits the model's context window: {body}"
+                )
+            }
         }
     }
 }
 
 fn retryable_status(status: u16) -> bool {
     matches!(status, 408 | 409 | 429 | 500 | 502 | 503 | 504 | 529)
+}
+
+const OVERFLOW_MARKERS: &[&str] = &[
+    "exceeded model token limit",
+    "prompt is too long",
+    "prompt too long",
+    "request_too_large",
+    "exceeds the context window",
+    "maximum context length",
+    "context_length_exceeded",
+    "context length exceeded",
+    "input token count",
+    "too many tokens",
+    "token limit exceeded",
+];
+
+pub(crate) fn is_context_overflow(status: u16, body: &str) -> bool {
+    if !matches!(status, 400 | 413) {
+        return false;
+    }
+    let body = body.to_ascii_lowercase();
+    if body.contains("rate limit") || body.contains("too many requests") {
+        return false;
+    }
+    status == 413 || OVERFLOW_MARKERS.iter().any(|marker| body.contains(marker))
+}
+
+pub(crate) fn backoff(attempt: usize, cancel: &AtomicBool) -> Result<(), ProviderError> {
+    let deadline = std::time::Instant::now() + Duration::from_millis(500 * (1 << attempt));
+    while std::time::Instant::now() < deadline {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ProviderError::Cancelled);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    Ok(())
 }
 
 /// Per-read socket timeout on the model stream. Short on purpose: it is the
@@ -371,7 +422,7 @@ pub fn stream_turn(
                         crate::debug_log!(
                             "kimi stream dropped before any output (attempt {attempt}): {message}; retrying"
                         );
-                        std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
+                        backoff(attempt, cancel)?;
                         continue;
                     }
                     other => return other,
@@ -389,22 +440,42 @@ pub fn stream_turn(
                 }
                 if retryable_status(status) && attempt < 4 {
                     crate::debug_log!("kimi HTTP {status} (attempt {attempt}); retrying");
-                    std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
+                    backoff(attempt, cancel)?;
                     continue;
                 }
                 let brief: String = text.chars().take(400).collect();
                 crate::debug_log!("kimi HTTP {status} (attempt {attempt}); giving up: {brief}");
+                if is_context_overflow(status, &text) {
+                    return Err(ProviderError::ContextOverflow(brief));
+                }
                 return Err(ProviderError::Http(status, brief));
             }
             Err(ureq::Error::Transport(t)) => {
                 crate::debug_log!("kimi transport error (attempt {attempt}): {t}");
                 if attempt < 4 {
-                    std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
+                    backoff(attempt, cancel)?;
                     continue;
                 }
                 return Err(ProviderError::Transport(t.to_string()));
             }
         }
+    }
+}
+
+const TOOL_ARGS_PROGRESS_STEP: usize = 1024;
+
+fn runaway_reason(period: usize, bytes: usize) -> String {
+    format!(
+        "the arguments degenerated into a {period}-byte pattern repeating over {} KB and were discarded before running. Re-issue the call with only the fields the tool documents.",
+        bytes / 1024
+    )
+}
+
+pub(crate) fn invalid_arguments_reason(cut_off: bool) -> String {
+    if cut_off {
+        "the arguments were cut off at the output token limit, so the call was not run. Re-issue it with complete arguments; split a large write into smaller edits.".into()
+    } else {
+        "the arguments were not a valid JSON object, so the call was not run. Re-issue it with well-formed arguments.".into()
     }
 }
 
@@ -418,10 +489,15 @@ fn read_stream(
     let mut content: Vec<ContentBlock> = Vec::new();
     let mut thinking = String::new();
     let mut partial_json: Vec<String> = Vec::new();
+    let mut guards: Vec<crate::runaway::RepetitionGuard> = Vec::new();
+    let mut thinking_guard = crate::runaway::RepetitionGuard::default();
+    let mut unparsed: Vec<usize> = Vec::new();
+    let mut rejected: HashMap<String, String> = HashMap::new();
     let mut stop_reason = String::from("end_turn");
     let mut usage = Usage::default();
     let mut events = 0usize;
     let mut saw_message_stop = false;
+    let mut runaway = false;
     // True once the model has produced anything user-visible; a stream that
     // dies after this point must not be silently retried (the retry would
     // re-emit what is already on screen).
@@ -467,7 +543,6 @@ fn read_stream(
                         content.push(ContentBlock::Text {
                             text: String::new(),
                         });
-                        partial_json.push(String::new());
                     }
                     "tool_use" => {
                         let name = block["name"].as_str().unwrap_or("").to_string();
@@ -479,7 +554,6 @@ fn read_stream(
                             input: Value::Null,
                             signature: None,
                         });
-                        partial_json.push(String::new());
                     }
                     // A thinking block still occupies an index, so it
                     // gets a placeholder to keep later deltas aligned;
@@ -489,9 +563,10 @@ fn read_stream(
                         content.push(ContentBlock::Text {
                             text: String::new(),
                         });
-                        partial_json.push(String::new());
                     }
                 }
+                partial_json.push(String::new());
+                guards.push(crate::runaway::RepetitionGuard::default());
             }
             "content_block_delta" => {
                 let index = event["index"].as_u64().unwrap_or(0) as usize;
@@ -503,12 +578,47 @@ fn read_stream(
                         emitted = true;
                         if let Some(ContentBlock::Text { text }) = content.get_mut(index) {
                             text.push_str(piece);
+                            if let Some(guard) = guards.get_mut(index) {
+                                if let Some(period) = guard.runaway(text) {
+                                    crate::debug_log!(
+                                        "kimi text repeats a {period}-byte pattern after {} bytes; stopping",
+                                        text.len()
+                                    );
+                                    runaway = true;
+                                }
+                            }
                         }
                     }
                     "input_json_delta" => {
                         let piece = delta["partial_json"].as_str().unwrap_or("");
-                        if let Some(slot) = partial_json.get_mut(index) {
-                            slot.push_str(piece);
+                        let (Some(slot), Some(guard)) =
+                            (partial_json.get_mut(index), guards.get_mut(index))
+                        else {
+                            continue;
+                        };
+                        let before = slot.len();
+                        slot.push_str(piece);
+                        if let Some(ContentBlock::ToolUse {
+                            id, name, input, ..
+                        }) = content.get_mut(index)
+                        {
+                            if before / TOOL_ARGS_PROGRESS_STEP
+                                != slot.len() / TOOL_ARGS_PROGRESS_STEP
+                            {
+                                on_event(StreamEvent::ToolArgs {
+                                    name: name.as_str(),
+                                    bytes: slot.len(),
+                                });
+                            }
+                            if let Some(period) = guard.runaway(slot) {
+                                crate::debug_log!(
+                                    "kimi {name} arguments repeat a {period}-byte pattern after {} bytes; stopping",
+                                    slot.len()
+                                );
+                                rejected.insert(id.clone(), runaway_reason(period, slot.len()));
+                                *input = json!({});
+                                runaway = true;
+                            }
                         }
                     }
                     "thinking_delta" => {
@@ -516,8 +626,19 @@ fn read_stream(
                         thinking.push_str(piece);
                         on_event(StreamEvent::ThinkingDelta(piece));
                         emitted = true;
+                        if let Some(period) = thinking_guard.runaway(&thinking) {
+                            crate::debug_log!(
+                                "kimi thinking repeats a {period}-byte pattern after {} bytes; stopping",
+                                thinking.len()
+                            );
+                            runaway = true;
+                        }
                     }
                     _ => {}
+                }
+                if runaway {
+                    stop_reason = STOP_REPETITION.into();
+                    break;
                 }
             }
             "content_block_stop" => {
@@ -527,7 +648,13 @@ fn read_stream(
                     *input = if raw.trim().is_empty() {
                         json!({})
                     } else {
-                        serde_json::from_str(raw).unwrap_or(Value::String(raw.to_string()))
+                        match serde_json::from_str::<Value>(raw) {
+                            Ok(parsed) if parsed.is_object() => parsed,
+                            _ => {
+                                unparsed.push(index);
+                                json!({})
+                            }
+                        }
                     };
                 }
             }
@@ -551,36 +678,46 @@ fn read_stream(
         }
     }
 
-    if !saw_message_stop {
+    let unfinished_tool = content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolUse { input, .. } if input.is_null()));
+    if !saw_message_stop && !runaway && unfinished_tool {
         // The connection ended mid-turn. A tool_use whose content_block_stop
         // never arrived still carries a Null input — running it would feed
         // the tool empty arguments, so the turn has to fail instead.
-        let unfinished_tool = content
-            .iter()
-            .any(|block| matches!(block, ContentBlock::ToolUse { input, .. } if input.is_null()));
-        if unfinished_tool {
-            crate::debug_log!("kimi stream ended mid tool call after {events} events");
-            return Err(ProviderError::StreamDropped {
-                mid_turn: emitted,
-                message: "the model stream ended in the middle of a tool call".into(),
-            });
+        crate::debug_log!("kimi stream ended mid tool call after {events} events");
+        return Err(ProviderError::StreamDropped {
+            mid_turn: emitted,
+            message: "the model stream ended in the middle of a tool call".into(),
+        });
+    }
+    let cut_off = stop_reason == "max_tokens";
+    for (index, block) in content.iter_mut().enumerate() {
+        if let ContentBlock::ToolUse { id, input, .. } = block {
+            if input.is_null() || unparsed.contains(&index) {
+                *input = json!({});
+                rejected
+                    .entry(id.clone())
+                    .or_insert_with(|| invalid_arguments_reason(cut_off || runaway));
+            }
         }
     }
     // Drop empty text blocks the protocol sometimes emits around tool use.
     content.retain(|block| !matches!(block, ContentBlock::Text { text } if text.is_empty()));
-    if !saw_message_stop && content.is_empty() && thinking.is_empty() {
+    if !saw_message_stop && !runaway && content.is_empty() && thinking.is_empty() {
         crate::debug_log!("kimi stream ended before the turn completed ({events} events)");
         return Err(ProviderError::StreamDropped {
             mid_turn: emitted,
             message: "the model stream ended before the turn completed".into(),
         });
     }
-    if !saw_message_stop {
+    if !saw_message_stop && !runaway {
         crate::debug_log!("kimi stream ended without message_stop; keeping the partial turn");
     }
     crate::debug_log!(
-        "kimi stream done: {events} events, {} content blocks, {}ms",
+        "kimi stream done: {events} events, {} content blocks, {} rejected calls, {}ms",
         content.len(),
+        rejected.len(),
         started.elapsed().as_millis()
     );
     Ok(TurnResult {
@@ -588,6 +725,7 @@ fn read_stream(
         thinking,
         stop_reason,
         usage,
+        rejected,
     })
 }
 
@@ -1024,6 +1162,178 @@ mod stream_tests {
             ),
             "an empty stream must be flagged retriable, got {result:?}"
         );
+    }
+
+    fn tool_call_events(id: &str, name: &str, index: u64, pieces: &[String]) -> Vec<Value> {
+        let mut events = vec![
+            json!({"type":"content_block_start","index":index,"content_block":{"type":"tool_use","id":id,"name":name}}),
+        ];
+        events.extend(pieces.iter().map(|piece| {
+            json!({"type":"content_block_delta","index":index,"delta":{"type":"input_json_delta","partial_json":piece}})
+        }));
+        events
+    }
+
+    #[test]
+    fn a_runaway_tool_call_is_cut_off_and_rejected_without_waiting_for_the_cap() {
+        let mut pieces = vec![r#"{"action":"exec","command":"git status","include"#.to_string()];
+        pieces.extend(std::iter::repeat_n("_default".to_string(), 4000));
+        let mut events =
+            vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        events.extend(tool_call_events("toolu_1", "terminal", 0, &pieces));
+        events.push(json!({"type":"content_block_stop","index":0}));
+        events.push(json!({"type":"message_stop"}));
+        let body = sse(&events);
+        let mut deltas_read = 0usize;
+        let mut progress = Vec::new();
+        let cancel = AtomicBool::new(false);
+        let turn = read_stream(
+            body.as_bytes(),
+            &cancel,
+            &mut |event| {
+                if let StreamEvent::ToolArgs { bytes, .. } = event {
+                    progress.push(bytes);
+                    deltas_read = bytes;
+                }
+            },
+            Duration::from_secs(120),
+        )
+        .expect("a runaway is a result, not a transport failure");
+        assert_eq!(turn.stop_reason, STOP_REPETITION);
+        assert!(
+            deltas_read < 8 * 1024,
+            "read {deltas_read} bytes before stopping"
+        );
+        assert!(
+            !progress.is_empty(),
+            "progress must be reported while arguments stream"
+        );
+        match &turn.content[0] {
+            ContentBlock::ToolUse { id, input, .. } => {
+                assert_eq!(
+                    input,
+                    &json!({}),
+                    "the transcript must not carry the garbage"
+                );
+                assert!(
+                    turn.rejected[id].contains("repeating"),
+                    "{:?}",
+                    turn.rejected
+                );
+            }
+            other => panic!("expected the tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_arguments_cut_off_at_the_output_limit_are_rejected() {
+        let mut events =
+            vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        events.extend(tool_call_events(
+            "toolu_1",
+            "write_file",
+            0,
+            &[r#"{"path":"a.rs","content":"fn ma"#.to_string()],
+        ));
+        events.extend([
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":32768}}),
+            json!({"type":"message_stop"}),
+        ]);
+        let turn = read(&sse(&events));
+        assert!(turn.rejected["toolu_1"].contains("output token limit"));
+        assert!(
+            matches!(&turn.content[0], ContentBlock::ToolUse { input, .. } if input == &json!({}))
+        );
+    }
+
+    #[test]
+    fn a_tool_call_whose_block_never_closed_before_message_stop_is_rejected() {
+        let mut events =
+            vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        events.extend(tool_call_events(
+            "toolu_1",
+            "read_file",
+            0,
+            &[r#"{"pa"#.to_string()],
+        ));
+        events.extend([
+            json!({"type":"message_delta","delta":{"stop_reason":"max_tokens"}}),
+            json!({"type":"message_stop"}),
+        ]);
+        let turn = read(&sse(&events));
+        assert!(turn.rejected.contains_key("toolu_1"));
+    }
+
+    #[test]
+    fn non_object_arguments_are_rejected_and_good_siblings_still_run() {
+        let mut events =
+            vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        events.extend(tool_call_events(
+            "bad",
+            "terminal",
+            0,
+            &[r#""ls""#.to_string()],
+        ));
+        events.push(json!({"type":"content_block_stop","index":0}));
+        events.extend(tool_call_events(
+            "good",
+            "read_file",
+            1,
+            &[r#"{"path":"a"}"#.to_string()],
+        ));
+        events.extend([
+            json!({"type":"content_block_stop","index":1}),
+            json!({"type":"message_stop"}),
+        ]);
+        let turn = read(&sse(&events));
+        assert!(turn.rejected["bad"].contains("not a valid JSON object"));
+        assert!(!turn.rejected.contains_key("good"));
+        assert!(
+            matches!(&turn.content[1], ContentBlock::ToolUse { input, .. } if input["path"] == "a")
+        );
+    }
+
+    #[test]
+    fn a_text_answer_stuck_in_a_loop_is_stopped() {
+        let mut events =
+            vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        events
+            .push(json!({"type":"content_block_start","index":0,"content_block":{"type":"text"}}));
+        for _ in 0..2000 {
+            events.push(json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"and then "}}));
+        }
+        events.push(json!({"type":"message_stop"}));
+        let turn = read(&sse(&events));
+        assert_eq!(turn.stop_reason, STOP_REPETITION);
+        assert!(matches!(&turn.content[0], ContentBlock::Text { text } if text.len() < 8 * 1024));
+    }
+
+    #[test]
+    fn context_overflow_is_told_apart_from_other_rejections() {
+        assert!(is_context_overflow(
+            400,
+            r#"{"error":{"message":"Your request exceeded model token limit: 262144 (requested: 270001)"}}"#
+        ));
+        assert!(is_context_overflow(
+            400,
+            "prompt is too long: 213462 tokens > 200000 maximum"
+        ));
+        assert!(is_context_overflow(413, ""));
+        assert!(!is_context_overflow(400, "tools.0.input_schema: invalid"));
+        assert!(!is_context_overflow(429, "too many tokens per minute"));
+        assert!(!is_context_overflow(
+            400,
+            "rate limit: too many tokens, slow down"
+        ));
+    }
+
+    #[test]
+    fn a_retry_backoff_gives_way_to_cancel() {
+        let cancel = AtomicBool::new(true);
+        let started = std::time::Instant::now();
+        assert!(matches!(backoff(3, &cancel), Err(ProviderError::Cancelled)));
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     #[test]

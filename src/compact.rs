@@ -110,6 +110,50 @@ fn render(messages: &[Message]) -> String {
     out
 }
 
+const SHED_THRESHOLD: usize = 1024;
+const SHED_EXCERPT: usize = 300;
+
+pub fn shed_tool_results(
+    messages: &mut [Message],
+    keep_recent: usize,
+    mut stash: impl FnMut(&str) -> Option<String>,
+) -> usize {
+    let result_messages: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            m.content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let sheddable = result_messages.len().saturating_sub(keep_recent);
+    let mut shed = 0;
+    for &index in &result_messages[..sheddable] {
+        for block in &mut messages[index].content {
+            let ContentBlock::ToolResult { content, .. } = block else {
+                continue;
+            };
+            if content.len() <= SHED_THRESHOLD {
+                continue;
+            }
+            let saved = match stash(content) {
+                Some(handle) => format!(
+                    "; the full result is saved as {handle} and read_tool_result can page it"
+                ),
+                None => String::new(),
+            };
+            *content = format!(
+                "{}\n\n[elided to fit the context window{saved}]",
+                excerpt(content, SHED_EXCERPT)
+            );
+            shed += 1;
+        }
+    }
+    shed
+}
+
 /// Ask the model to summarize `history`. Returns the brief.
 pub fn summarize(
     config: &Config,
@@ -189,6 +233,44 @@ mod tests {
             is_user_turn(&messages[cut]),
             "retained history starts at a real user turn"
         );
+    }
+
+    fn big_result(id: &str) -> Message {
+        Message {
+            role: "user".into(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id.into(),
+                content: "log line\n".repeat(500),
+                is_error: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn shedding_trims_old_results_and_keeps_the_recent_ones() {
+        let mut messages = vec![
+            user("build it"),
+            assistant_tool_use(),
+            big_result("t1"),
+            assistant_tool_use(),
+            big_result("t2"),
+            assistant_tool_use(),
+            big_result("t3"),
+        ];
+        let mut stashed = 0;
+        let shed = shed_tool_results(&mut messages, 1, |_| {
+            stashed += 1;
+            Some(format!("tr-{stashed}"))
+        });
+        assert_eq!(shed, 2);
+        let content = |i: usize| match &messages[i].content[0] {
+            ContentBlock::ToolResult { content, .. } => content.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(content(2).contains("tr-1") && content(2).len() < 1024);
+        assert!(content(4).contains("tr-2"));
+        assert_eq!(content(6).len(), 4500);
+        assert_eq!(shed_tool_results(&mut messages, 1, |_| None), 0);
     }
 
     #[test]

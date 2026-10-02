@@ -70,6 +70,7 @@ pub trait Sink {
     /// sinks use it to keep the waiting line honest; it fires on top of the
     /// stall budget that eventually aborts and retries the request.
     fn on_silence(&mut self, _seconds: u64) {}
+    fn on_tool_args(&mut self, _tool: &str, _bytes: usize) {}
     fn on_step_done(&mut self, _step: &StepDone) {}
     fn on_group_start(&mut self, summary: &str);
     fn on_tool_start(&mut self, start: &ToolStart);
@@ -209,11 +210,43 @@ impl Agent {
         if self.context_fraction() < TRIGGER {
             return;
         }
+        if compact::plan_cut(&self.session.messages).is_none() {
+            self.shed_old_results(sink, 2);
+            return;
+        }
         match self.compact_now(cancel, sink) {
             Ok(report) => sink.on_notice(&report),
             // Compaction is an optimisation; a failure must not kill the turn.
             Err(e) => sink.on_notice(&format!("could not compact ({e}); continuing")),
         }
+    }
+
+    fn shed_old_results(&mut self, sink: &mut dyn Sink, keep_recent: usize) -> usize {
+        let store = &self.tool_context.results;
+        let shed = compact::shed_tool_results(&mut self.session.messages, keep_recent, |text| {
+            store.put(text).ok()
+        });
+        if shed > 0 {
+            self.session.rewrite();
+            self.last_input_tokens = 0;
+            sink.on_notice(&format!(
+                "trimmed {shed} older tool results to fit the context window"
+            ));
+        }
+        shed
+    }
+
+    fn recover_from_overflow(&mut self, cancel: &AtomicBool, sink: &mut dyn Sink) -> bool {
+        if compact::plan_cut(&self.session.messages).is_some() {
+            match self.compact_now(cancel, sink) {
+                Ok(report) => {
+                    sink.on_notice(&report);
+                    return true;
+                }
+                Err(e) => sink.on_notice(&format!("could not compact ({e})")),
+            }
+        }
+        self.shed_old_results(sink, 1) > 0
     }
 
     pub fn run_user_turn(
@@ -236,8 +269,13 @@ impl Agent {
 
         let system = context::system_prompt(&self.config);
         let gateway_tools = tools::gateway_tools();
+        let mut overflow_recoveries = 0;
+        let mut rejected_streak = 0;
 
         for step in 0..self.config.max_agent_steps {
+            if step > 0 {
+                self.compact_if_needed(cancel, sink);
+            }
             sink.on_waiting(step + 1);
             let mut saw_text = false;
             let started = std::time::Instant::now();
@@ -260,6 +298,7 @@ impl Agent {
                     StreamEvent::ThinkingDelta(piece) => sink.on_thinking(piece),
                     StreamEvent::ToolUseStart { .. } => {}
                     StreamEvent::Silence { seconds } => sink.on_silence(seconds),
+                    StreamEvent::ToolArgs { name, bytes } => sink.on_tool_args(name, bytes),
                 },
             );
             let elapsed = started.elapsed();
@@ -278,6 +317,23 @@ impl Agent {
                     }
                     sink.on_notice("interrupted");
                     return Ok(());
+                }
+                Err(provider::ProviderError::ContextOverflow(body)) if overflow_recoveries < 2 => {
+                    crate::debug_log!("context overflow at step {}: {body}", step + 1);
+                    if saw_text {
+                        sink.on_text_done();
+                    }
+                    overflow_recoveries += 1;
+                    self.last_input_tokens = self.config.context_window();
+                    sink.on_notice(
+                        "the conversation outgrew the model's context window; making room",
+                    );
+                    if self.recover_from_overflow(cancel, sink) {
+                        continue;
+                    }
+                    return Err(
+                        "the conversation no longer fits the model's context window and nothing could be trimmed; start a new session or switch to a larger-window model".into(),
+                    );
                 }
                 Err(e) => {
                     crate::debug_log!("turn failed: {e}");
@@ -329,7 +385,14 @@ impl Agent {
                 });
             }
 
+            let repeating = turn.stop_reason == provider::STOP_REPETITION;
             if tool_calls.is_empty() {
+                if repeating {
+                    sink.on_notice(
+                        "stopped the model: it was repeating itself. Ask again, or rephrase the request",
+                    );
+                    return Ok(());
+                }
                 // Every Kimi response opens with a thinking block, and a turn
                 // can end with nothing but that: no text, no tool call. The
                 // transcript must not carry an empty assistant message (the
@@ -366,11 +429,19 @@ impl Agent {
                 .collect();
             sink.on_group_start(&tools::group_summary(&kinds));
 
+            let all_rejected = tool_calls
+                .iter()
+                .all(|(id, _, _)| turn.rejected.contains_key(id));
+            rejected_streak = if all_rejected { rejected_streak + 1 } else { 0 };
+
             let mut results: Vec<ContentBlock> = Vec::new();
             let total = tool_calls.len();
             for (index, (id, name, input)) in tool_calls.into_iter().enumerate() {
                 let last = index + 1 == total;
-                let outcome = self.execute_tool(&name, &input, last, cancel, sink);
+                let outcome = match turn.rejected.get(&id) {
+                    Some(reason) => self.discard_tool(&name, &input, reason, last, sink),
+                    None => self.execute_tool(&name, &input, last, cancel, sink),
+                };
                 // Oversized results go to the store; the transcript keeps a
                 // preview plus a handle the model can page through.
                 let content = if outcome.text.len() > tools::results::INLINE_CAP {
@@ -388,6 +459,12 @@ impl Agent {
                 role: "user".into(),
                 content: results,
             });
+            if rejected_streak >= 3 {
+                sink.on_notice(
+                    "stopped: the model sent malformed tool calls three steps in a row. Ask again, or rephrase the request",
+                );
+                return Ok(());
+            }
         }
 
         sink.on_notice(&format!(
@@ -395,6 +472,30 @@ impl Agent {
             self.config.max_agent_steps
         ));
         Ok(())
+    }
+
+    fn discard_tool(
+        &mut self,
+        name: &str,
+        input: &Value,
+        reason: &str,
+        last_in_group: bool,
+        sink: &mut dyn Sink,
+    ) -> tools::ToolOutcome {
+        crate::debug_log!("tool {name} discarded: {reason}");
+        let label = format!("Discarded a malformed {name} call");
+        sink.on_tool_done(&ToolDone {
+            tool: name,
+            label: &label,
+            input,
+            output: reason,
+            is_error: true,
+            last_in_group,
+            call: None,
+            elapsed: std::time::Duration::ZERO,
+            diff: None,
+        });
+        tools::ToolOutcome::err(reason)
     }
 
     fn execute_tool(

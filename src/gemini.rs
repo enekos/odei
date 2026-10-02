@@ -189,7 +189,7 @@ pub fn stream_turn(
                         crate::debug_log!(
                             "gemini stream dropped before any output (attempt {attempt}): {message}; retrying"
                         );
-                        std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
+                        crate::provider::backoff(attempt, cancel)?;
                         continue;
                     }
                     other => return other,
@@ -199,17 +199,20 @@ pub fn stream_turn(
                 let text = resp.into_string().unwrap_or_default();
                 if retryable_status(status) && attempt < 4 {
                     crate::debug_log!("gemini HTTP {status} (attempt {attempt}); retrying");
-                    std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
+                    crate::provider::backoff(attempt, cancel)?;
                     continue;
                 }
                 let brief: String = text.chars().take(400).collect();
                 crate::debug_log!("gemini HTTP {status} (attempt {attempt}); giving up: {brief}");
+                if crate::provider::is_context_overflow(status, &text) {
+                    return Err(ProviderError::ContextOverflow(brief));
+                }
                 return Err(ProviderError::Http(status, brief));
             }
             Err(ureq::Error::Transport(t)) => {
                 crate::debug_log!("gemini transport error (attempt {attempt}): {t}");
                 if attempt < 4 {
-                    std::thread::sleep(Duration::from_millis(500 * (1 << attempt)));
+                    crate::provider::backoff(attempt, cancel)?;
                     continue;
                 }
                 return Err(ProviderError::Transport(t.to_string()));
@@ -291,6 +294,8 @@ fn read_stream(
     let mut state = StreamState::default();
     let mut events = 0usize;
     let mut emitted = false;
+    let mut text_guard = crate::runaway::RepetitionGuard::default();
+    let mut thinking_guard = crate::runaway::RepetitionGuard::default();
     let started = std::time::Instant::now();
 
     loop {
@@ -313,6 +318,14 @@ fn read_stream(
         let chunk: Value = serde_json::from_str(&payload)
             .map_err(|e| ProviderError::Protocol(format!("bad SSE payload: {e}")))?;
         apply_chunk(&chunk, &mut state, &mut emitted, on_event)?;
+        let repeating = text_guard
+            .runaway(&state.text)
+            .or_else(|| thinking_guard.runaway(&state.thinking));
+        if let Some(period) = repeating {
+            crate::debug_log!("gemini output repeats a {period}-byte pattern; stopping");
+            state.finish = "REPETITION".into();
+            break;
+        }
     }
 
     crate::debug_log!(
@@ -335,6 +348,7 @@ fn read_stream(
     content.extend(calls);
     let stop_reason = match finish.as_str() {
         "MAX_TOKENS" => "max_tokens".to_string(),
+        "REPETITION" => crate::provider::STOP_REPETITION.to_string(),
         "" | "STOP" => if has_calls { "tool_use" } else { "end_turn" }.to_string(),
         other => other.to_ascii_lowercase(),
     };
@@ -343,6 +357,7 @@ fn read_stream(
         thinking,
         stop_reason,
         usage,
+        rejected: HashMap::new(),
     })
 }
 

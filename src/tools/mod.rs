@@ -9,6 +9,7 @@ pub mod web;
 
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct ToolOutcome {
     pub text: String,
@@ -70,6 +71,7 @@ pub struct ToolContext {
     pub workspace_root: PathBuf,
     pub terminal: terminal::TerminalRegistry,
     pub results: results::Store,
+    pub cancel: &'static AtomicBool,
 }
 
 impl ToolContext {
@@ -78,7 +80,12 @@ impl ToolContext {
             workspace_root: workspace_root.to_path_buf(),
             terminal: terminal::TerminalRegistry::default(),
             results: results::Store::new(),
+            cancel: &crate::ui::CANCEL,
         }
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
     }
 
     /// Resolve a tool path argument: workspace-relative by default, external
