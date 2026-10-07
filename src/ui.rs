@@ -33,6 +33,12 @@ const INDENT: &str = "  ";
 const BODY_MARGIN: usize = INDENT.len() + 2;
 /// Calls `/expand all` prints before it starts pointing at `/call N` instead.
 const EXPAND_ALL_CAP: usize = 40;
+/// Clipboard writers `/copy` tries in order: macOS, Wayland, X11.
+const CLIPBOARD_COMMANDS: &[(&str, &[&str])] = &[
+    ("pbcopy", &[]),
+    ("wl-copy", &[]),
+    ("xclip", &["-selection", "clipboard"]),
+];
 
 /// Room to draw in. Wide terminals stop growing the measure at a readable
 /// line length instead of stretching a diff across the whole desk.
@@ -1388,15 +1394,19 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
                 }
                 "copy" => match last_assistant_text(&agent) {
                     Some(text) => {
-                        let copied = std::process::Command::new("pbcopy")
-                            .stdin(std::process::Stdio::piped())
-                            .spawn()
-                            .and_then(|mut child| {
-                                child.stdin.as_mut().unwrap().write_all(text.as_bytes())?;
-                                child.wait()
-                            })
-                            .map(|status| status.success())
-                            .unwrap_or(false);
+                        let copied = CLIPBOARD_COMMANDS.iter().any(|(program, args)| {
+                            std::process::Command::new(program)
+                                .args(*args)
+                                .stdin(std::process::Stdio::piped())
+                                .stderr(std::process::Stdio::null())
+                                .spawn()
+                                .and_then(|mut child| {
+                                    child.stdin.as_mut().unwrap().write_all(text.as_bytes())?;
+                                    child.wait()
+                                })
+                                .map(|status| status.success())
+                                .unwrap_or(false)
+                        });
                         if copied {
                             println!("{}copied last response{}", theme.dim, theme.reset());
                         } else {

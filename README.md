@@ -39,6 +39,18 @@ repository's release workflow rather than from someone else:
 gh attestation verify --repo enekos/odei odei-v0.1.0-aarch64-apple-darwin.tar.gz
 ```
 
+Linux packages:
+
+```bash
+yay -S odei                                     # Arch, from the AUR
+sudo apt install ./odei_<version>_amd64.deb       # Debian, Ubuntu
+sudo dnf install ./odei-<version>-1.x86_64.rpm    # Fedora, RHEL
+sudo apk add --allow-untrusted ./odei_<version>_x86_64.apk   # Alpine
+nix run github:enekos/odei                     # Nix
+```
+
+The `.deb`, `.rpm` and `.apk` files are on each [release](https://github.com/enekos/odei/releases), for x86_64 and arm64.
+
 Prefer to build it yourself:
 
 ```bash
@@ -537,4 +549,4 @@ LLM-based permission reviewer (a static classifier handles auto mode instead).
 
 ## License
 
-Apache-2.0.
+MIT.

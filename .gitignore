@@ -4,3 +4,4 @@ ui/Odei.app
 # One timestamped file per eval run; the interesting ones get quoted in a
 # commit message, not checked in.
 /evals/results
+/result

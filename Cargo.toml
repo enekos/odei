@@ -1,9 +1,9 @@
 [package]
 name = "odei"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 description = "Tiny native coding agent for the terminal, powered by Kimi or Gemini."
-license = "Apache-2.0"
+license = "MIT"
 repository = "https://github.com/enekos/odei"
 homepage = "https://github.com/enekos/odei"
 keywords = ["agent", "cli", "ai", "llm", "coding"]
