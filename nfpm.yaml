@@ -1,0 +1,22 @@
+name: odei
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+maintainer: Eneko Sarasola <113593779+enekos@users.noreply.github.com>
+description: "Tiny native coding agent for the terminal, powered by Kimi or Gemini."
+homepage: https://github.com/enekos/odei
+license: MIT
+recommends:
+  - git
+suggests:
+  - wl-clipboard
+  - xclip
+contents:
+  - src: dist/pkg/odei
+    dst: /usr/bin/odei
+    file_info:
+      mode: 0755
+  - src: LICENSE
+    dst: /usr/share/licenses/odei/LICENSE
+  - src: README.md
+    dst: /usr/share/doc/odei/README.md

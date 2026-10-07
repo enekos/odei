@@ -59,7 +59,7 @@ jobs:
           name="odei-${version}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
           cp "target/${{ matrix.target }}/release/odei" "dist/${name}/odei"
-          cp README.md "dist/${name}/"
+          cp README.md LICENSE "dist/${name}/"
           tar -czf "dist/${name}.tar.gz" -C dist "${name}"
           cd dist
           if command -v sha256sum >/dev/null; then
@@ -85,8 +85,57 @@ jobs:
             dist/*.tar.gz.sha256
           if-no-files-found: error
 
-  publish:
+  packages:
+    name: Linux packages ${{ matrix.arch }}
     needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: amd64
+          - target: aarch64-unknown-linux-musl
+            arch: arm64
+    env:
+      NFPM_VERSION: 2.47.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: odei-*${{ matrix.target }}
+          path: artifact
+          merge-multiple: true
+
+      - name: Install nfpm
+        run: |
+          curl -fsSL -o nfpm.deb "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb"
+          sudo dpkg -i nfpm.deb
+
+      - name: Build deb, rpm and apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/pkg packages
+          tar -xzf artifact/*.tar.gz -C dist/pkg --strip-components=1
+          case "$GITHUB_REF_NAME" in v*) VERSION="${GITHUB_REF_NAME#v}" ;; *) VERSION=0.0.0 ;; esac
+          export VERSION ARCH="${{ matrix.arch }}"
+          for format in deb rpm apk; do
+            nfpm package --config nfpm.yaml --packager "$format" --target packages/
+          done
+          cd packages
+          for f in *; do sha256sum "$f" > "$f.sha256"; done
+          ls -l
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.arch }}
+          path: packages/*
+          if-no-files-found: error
+
+  publish:
+    needs: [build, packages]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
@@ -103,7 +152,7 @@ jobs:
         run: |
           set -euo pipefail
           cd artifacts
-          cat *.tar.gz.sha256 > SHA256SUMS
+          cat ./*.sha256 > SHA256SUMS
           sha256sum -c SHA256SUMS
           ls -l
 
@@ -114,4 +163,5 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "odei ${GITHUB_REF_NAME}" \
             --generate-notes \
-            artifacts/*.tar.gz artifacts/*.tar.gz.sha256 artifacts/SHA256SUMS
+            artifacts/*.tar.gz artifacts/*.deb artifacts/*.rpm artifacts/*.apk \
+            artifacts/*.sha256 artifacts/SHA256SUMS
