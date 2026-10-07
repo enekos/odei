@@ -537,4 +537,4 @@ LLM-based permission reviewer (a static classifier handles auto mode instead).
 
 ## License
 
-Apache-2.0.
+MIT.
