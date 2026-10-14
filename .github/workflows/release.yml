@@ -111,7 +111,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          notes="$(printf '%s\n' \
+            '## Install' \
+            '' \
+            '```bash' \
+            'curl -fsSL https://raw.githubusercontent.com/enekos/odei/master/install.sh | sh' \
+            '```' \
+            '' \
+            'Already installed? `odei upgrade`.')"
           gh release create "${GITHUB_REF_NAME}" \
             --title "odei ${GITHUB_REF_NAME}" \
+            --notes "$notes" \
             --generate-notes \
             artifacts/*.tar.gz artifacts/*.tar.gz.sha256 artifacts/SHA256SUMS
