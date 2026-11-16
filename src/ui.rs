@@ -1086,7 +1086,10 @@ pub fn run_interactive(config: Config, resume: Option<String>) -> i32 {
         // turn reads as its own block instead of running into the output
         // above and below it.
         println!();
-        println!("{}", statusline(theme, &agent));
+        match crate::statusline::render(&agent) {
+            Some(line) => println!("{line}"),
+            None => println!("{}", statusline(theme, &agent)),
+        }
         let line = match editor.readline(theme::INPUT_PREFIX) {
             Ok(line) => line,
             Err(rustyline::error::ReadlineError::Interrupted) => {

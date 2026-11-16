@@ -25,6 +25,7 @@ mod runaway;
 mod serve;
 mod session;
 mod splash;
+mod statusline;
 mod theme;
 mod tools;
 mod ui;

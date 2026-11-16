@@ -462,6 +462,7 @@ when two of them disagree the one scoped nearest the files being touched wins.
 | `ODEI_THEME` | `light` / `dark` (auto-detected otherwise) |
 | `ODEI_MARKDOWN` | `off` to print the model's markdown source verbatim |
 | `ODEI_SPLASH` | `off` for the one-line greeting, `static` for the settled wordmark |
+| `ODEI_STATUSLINE` | a program to draw the statusline instead: it gets the session as JSON on stdin (Claude Code's `statusLine` field names) and `AGENTLINE_PID`; failing, empty or slower than 500 ms falls back to the built-in line |
 | `NO_COLOR` | disable styling |
 
 Profile data lives in `~/.odei`: `config.json`, `permissions.json`, `sessions/*.jsonl`,
